@@ -26,9 +26,11 @@ def load_csv(path: Path) -> List[Dict[str, Any]]:
             row["cnot_count"] = int(row["cnot_count"])
             row["qubit_count"] = int(row["qubit_count"])
             row["gate_count"] = int(row["gate_count"])
+            row["ry_count"] = int(row.get("ry_count", 0))
             row["time_ms"] = float(row["time_ms"])
             row["fidelity"] = float(row.get("fidelity", 0))
             row["success"] = row["success"] == "true"
+            row["gs_t_count"] = int(row.get("gs_t_count", 0))
             rows.append(row)
     return rows
 
@@ -73,6 +75,11 @@ def generate_summary(rows: List[Dict], out_dir: Path) -> None:
     precisions = sorted(set(r["precision_bits"] for r in rows if r["precision_bits"] > 0))
     non_dense = [f for f in families if "dense" not in f]
 
+    # Use gs_t_count (gridsynth) for rotation circuits, t_count for QROM
+    for r in rows:
+        r.setdefault("effective_t",
+                      r["gs_t_count"] if r["gs_t_count"] > 0 else r["t_count"])
+
     lines.append("## Gate Breakdown by Approach and n\n")
     lines.append("| Approach | n | T-count | CNOT | Qubits | Gates |")
     lines.append("|----------|---|--------:|-----:|-------:|------:|")
@@ -85,7 +92,7 @@ def generate_summary(rows: List[Dict], out_dir: Path) -> None:
                 sub = [r for r in sub if r["family"] in non_dense]
             if not sub:
                 continue
-            t = round(_mean([r["t_count"] for r in sub]))
+            t = round(_mean([r["effective_t"] for r in sub]))
             cx = round(_mean([r["cnot_count"] for r in sub]))
             q = round(_mean([r["qubit_count"] for r in sub]))
             g = round(_mean([r["gate_count"] for r in sub]))
@@ -100,7 +107,7 @@ def generate_summary(rows: List[Dict], out_dir: Path) -> None:
     for fam in families:
         cols = [fam]
         for approach in approaches:
-            vals = [r["t_count"] for r in rows
+            vals = [r["effective_t"] for r in rows
                     if r["family"] == fam and r["approach"] == approach and r["success"]]
             cols.append(f"{geomean(vals):.0f}" if vals else "-")
         lines.append("| " + " | ".join(cols) + " |")
@@ -118,11 +125,17 @@ def plot_t_cost_scaling(rows: List[Dict], out_dir: Path) -> None:
     colors = {"rotation_sparse": "#03A9F4", "rotation_dense": "#0D47A1",
               "qrom": "#FF5722", "selectswap": "#4CAF50"}
 
+    # Use gs_t_count (gridsynth) for rotation circuits, t_count for QROM
+    for r in rows:
+        r.setdefault("effective_t",
+                      r["gs_t_count"] if r["gs_t_count"] > 0 else r["t_count"])
+
     for approach in approaches:
         x_vals, y_vals = [], []
         for n in ns:
-            vals = [r["t_count"] for r in rows
+            vals = [r["effective_t"] for r in rows
                     if r["n"] == n and r["approach"] == approach and r["success"]]
+            vals = [v for v in vals if v > 0]
             if vals:
                 x_vals.append(n)
                 y_vals.append(_mean(vals))
@@ -148,8 +161,13 @@ def plot_gate_breakdown(rows: List[Dict], out_dir: Path) -> None:
 
     approaches = sorted(set(r["approach"] for r in rows))
     ns = sorted(set(r["n"] for r in rows))
-    metrics = [("t_count", "T-count"), ("cnot_count", "CNOT"),
+    metrics = [("effective_t", "T-count"), ("cnot_count", "CNOT"),
                ("qubit_count", "Qubits"), ("gate_count", "Total gates")]
+
+    # Build effective T-count: use gs_t_count (gridsynth) for rotation circuits,
+    # fall back to t_count (native T gates) for QROM circuits.
+    for r in rows:
+        r["effective_t"] = r["gs_t_count"] if r["gs_t_count"] > 0 else r["t_count"]
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     width = 0.8 / len(approaches)
@@ -163,7 +181,8 @@ def plot_gate_breakdown(rows: List[Dict], out_dir: Path) -> None:
             heights = []
             for n in ns:
                 vals = [r[key] for r in rows
-                        if r["n"] == n and r["approach"] == approach and r["success"]]
+                        if r["n"] == n and r["approach"] == approach and r["success"]
+                        and r[key] > 0]
                 heights.append(_mean(vals) if vals else 0)
             offset = (i - len(approaches) / 2 + 0.5) * width
             ax.bar(x + offset, heights, width, label=approach,
