@@ -5,7 +5,7 @@ from qiskit.quantum_info import Statevector
 
 from qsp.state import dicke_state, to_statevector, w_state
 from qsp.rotation.sparse import prepare_state_sparse
-
+#Diyi_test
 
 def _fidelity(qc, target, n_bits):
     sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
