@@ -6,9 +6,11 @@ A quantum state is represented as ``(state, n_bits)`` where *state* is a
 """
 from __future__ import annotations
 
+import json
 import math
 import random
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -131,3 +133,83 @@ def random_sparse_state(n_bits: int, seed: int = 42) -> Tuple[State, int]:
 
 def random_dense_state(n_bits: int, seed: int = 42) -> Tuple[State, int]:
     return random_state(n_bits, 1 << (n_bits - 1), seed)
+
+
+# --- JSON serialization ---
+
+def state_to_json(state: State, n_bits: int, **meta: Any) -> dict:
+    """Serialize a state to a JSON-compatible dict.
+
+    Extra keyword arguments are stored under ``"meta"``.
+    """
+    obj: dict = {"n_bits": n_bits, "amplitudes": {str(k): v for k, v in state.items()}}
+    if meta:
+        obj["meta"] = meta
+    return obj
+
+
+def state_from_json(obj: dict) -> Tuple[State, int]:
+    """Deserialize a state from a JSON-compatible dict."""
+    n_bits = obj["n_bits"]
+    state: State = {int(k): float(v) for k, v in obj["amplitudes"].items()}
+    return state, n_bits
+
+
+def save_state(path: str | Path, state: State, n_bits: int, **meta: Any) -> None:
+    """Write a single state to a JSON file."""
+    Path(path).write_text(json.dumps(state_to_json(state, n_bits, **meta), indent=2))
+
+
+def load_state(path: str | Path) -> Tuple[State, int, dict]:
+    """Read a state from a JSON file.  Returns ``(state, n_bits, meta)``."""
+    obj = json.loads(Path(path).read_text())
+    state, n_bits = state_from_json(obj)
+    return state, n_bits, obj.get("meta", {})
+
+
+# --- Benchmark suite generation ---
+
+FAMILIES = {
+    "w":              lambda n, seed: w_state(n),
+    "dicke_2":        lambda n, seed: dicke_state(n, 2),
+    "dicke_3":        lambda n, seed: dicke_state(n, 3),
+    "sparse_uniform": lambda n, seed: sparse_uniform(n, seed),
+    "sparse_random":  lambda n, seed: sparse_random(n, seed),
+    "dense_random":   lambda n, seed: random_dense_state(n, seed),
+}
+
+
+def dump_benchmarks(
+    out_dir: str | Path,
+    n_min: int = 3,
+    n_max: int = 8,
+    seeds: int = 3,
+    families: List[str] | None = None,
+) -> List[Path]:
+    """Generate benchmark states and save them as JSON files.
+
+    Returns the list of written paths.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    fams = families or list(FAMILIES.keys())
+    written: List[Path] = []
+
+    for fam in fams:
+        gen = FAMILIES[fam]
+        is_random = "random" in fam
+        max_n = min(n_max, 12) if "dense" in fam else n_max
+
+        for n in range(n_min, max_n + 1):
+            num_seeds = seeds if is_random else 1
+            for s in range(1, num_seeds + 1):
+                state, n_bits = gen(n, s)
+                tag = f"{fam}_n{n}" + (f"_s{s}" if is_random else "")
+                meta = {"family": fam, "n": n}
+                if is_random:
+                    meta["seed"] = s
+                p = out / f"{tag}.json"
+                save_state(p, state, n_bits, **meta)
+                written.append(p)
+
+    return written

@@ -8,87 +8,106 @@ Examples
 --------
     python -m experiments.compare_t_cost --n-max 5 -v
     python -m experiments.compare_t_cost -f w --precision 4,8
+    python -m experiments.compare_t_cost --benchmarks-dir benchmarks/
+    python -m experiments.compare_t_cost --dump-benchmarks benchmarks/
 """
 from __future__ import annotations
 
 import argparse
-import csv
+import json
 import math
 import sys
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from qiskit.quantum_info import Statevector
 
-from qsp.metrics import count_cnots, count_ry, estimate_t_count
+from qsp.metrics import clifford_t_counts, count_cnots, count_ry, estimate_t_count
 from qsp.qrom.alias_sampling import estimate_alias_sampling_t_count, synthesize_alias_sampling
 from qsp.rotation.dense import prepare_state_dense
 from qsp.rotation.sparse import prepare_state_sparse
 from qsp.state import (
+    FAMILIES,
     State,
-    dense_uniform,
-    dicke_state,
-    random_dense_state,
-    random_sparse_state,
-    sparse_random,
-    sparse_uniform,
+    dump_benchmarks,
+    load_state,
+    state_to_json,
     to_statevector,
-    w_state,
 )
 
 
 @dataclass
-class TcostResult:
+class Result:
+    # --- state ---
+    state_tag: str = ""
     family: str = ""
     n: int = 0
     m: int = 0
+    # --- method ---
     approach: str = ""
     precision_bits: int = 0
+    # --- primary metrics ---
     t_count: int = 0
-    ry_count: int = 0
-    cnot_count: int = 0
+    gs_t_count: int = 0
     qubit_count: int = 0
     gate_count: int = 0
-    time_ms: float = 0.0
+    # --- detailed gate counts ---
+    ry_count: int = 0
+    cnot_count: int = 0
+    h_count: int = 0
+    s_count: int = 0
+    x_count: int = 0
+    z_count: int = 0
+    ccx_count: int = 0
+    rz_count: int = 0
+    # --- quality ---
     fidelity: float = 0.0
+    time_ms: float = 0.0
     success: bool = True
-    qc: Optional[object] = None
-    gs_t_count: int = 0
 
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        # compact: drop zero counts
+        for k in list(d):
+            if isinstance(d[k], (int, float)) and d[k] == 0 and k not in ("n", "m", "precision_bits"):
+                del d[k]
+        return d
+
+
+# ---------------------------------------------------------------------------
+# State generation
+# ---------------------------------------------------------------------------
 
 def generate_state(family: str, n: int, seed: int) -> tuple[State, int]:
-    if family == "w":
-        return w_state(n)
-    if family == "dicke_2":
-        return dicke_state(n, 2)
-    if family == "dicke_3":
-        return dicke_state(n, 3)
+    gen = FAMILIES.get(family)
+    if gen is not None:
+        return gen(n, seed)
+    # legacy aliases
+    from qsp.state import dense_uniform
     if family == "dense_uniform":
         return dense_uniform(n)
-    if family == "sparse_uniform":
-        return sparse_uniform(n, seed)
-    if family == "sparse_random":
-        return sparse_random(n, seed)
-    if family == "dense_random":
-        return random_dense_state(n, seed)
     return {0: 1.0}, n
 
 
-def _compute_fidelity(qc, target: State, n_bits: int) -> float:
+# ---------------------------------------------------------------------------
+# Fidelity helpers
+# ---------------------------------------------------------------------------
+
+def _fidelity_rotation(qc, target: State, n_bits: int) -> float:
     try:
         sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
-        sim = np.real(sv.data[: 1 << n_bits])
-        tgt = to_statevector(target, n_bits)
-        return float(np.abs(np.dot(sim, tgt)) ** 2)
+        sim = sv.data[: 1 << n_bits]
+        tgt = to_statevector(target, n_bits).astype(complex)
+        return float(np.abs(np.vdot(tgt, sim)) ** 2)
     except Exception:
         return 0.0
 
 
-def _compute_fidelity_qrom(qc, target: State, n_bits: int) -> float:
+def _fidelity_qrom(qc, target: State, n_bits: int) -> float:
     try:
         sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
         probs = np.zeros(1 << n_bits)
@@ -101,39 +120,27 @@ def _compute_fidelity_qrom(qc, target: State, n_bits: int) -> float:
         return 0.0
 
 
-# --- Gridsynth Clifford+T decomposition ---
-
-def _gridsynth_t_count_single(theta: float, epsilon: float) -> int:
-    """T-count for a single Ry(theta) via gridsynth at precision epsilon."""
-    if abs(theta) < 1e-12:
-        return 0
-    if abs(theta - math.pi) < 1e-12 or abs(theta + math.pi) < 1e-12:
-        return 0
-
-    warnings.filterwarnings("ignore")
-    from pygridsynth import gridsynth_gates
-    gates = gridsynth_gates(theta, epsilon)
-    return gates.count("T")
-
+# ---------------------------------------------------------------------------
+# GridSynth T-count
+# ---------------------------------------------------------------------------
 
 _gs_cache: Dict[tuple, int] = {}
 
 
 def _gridsynth_t_count(qc, precision_bits: int) -> int:
-    """Total T-count for a rotation circuit using gridsynth decomposition.
-
-    Each Ry(theta) is decomposed to Clifford+T at epsilon = 2^{-precision_bits}
-    via the Ross-Selinger gridsynth algorithm.  CCX gates cost 4T each.
-    """
     epsilon = 2.0 ** (-precision_bits)
     total = 0
     for instr in qc.data:
         name = instr.operation.name
         if name == "ry":
             theta = float(instr.operation.params[0])
+            if abs(theta) < 1e-12 or abs(abs(theta) - math.pi) < 1e-12:
+                continue
             key = (round(theta * 1e10), precision_bits)
             if key not in _gs_cache:
-                _gs_cache[key] = _gridsynth_t_count_single(theta, epsilon)
+                warnings.filterwarnings("ignore")
+                from pygridsynth import gridsynth_gates
+                _gs_cache[key] = gridsynth_gates(theta, epsilon).count("T")
             total += _gs_cache[key]
         elif name == "ccx":
             total += 4
@@ -142,12 +149,26 @@ def _gridsynth_t_count(qc, precision_bits: int) -> int:
     return total
 
 
+# ---------------------------------------------------------------------------
+# Runners
+# ---------------------------------------------------------------------------
+
+def _fill_gate_counts(r: Result, qc) -> None:
+    ct = clifford_t_counts(qc)
+    r.h_count = ct["h"]
+    r.s_count = ct["s"]
+    r.x_count = ct["x"]
+    r.z_count = ct["z"]
+    r.ccx_count = ct["ccx"]
+    r.rz_count = ct["rz"]
+
+
 def run_rotation(
-    state: State, n_bits: int, family: str, strategy: str, timeout: float,
-    precision_bits: int = 0,
-) -> TcostResult:
-    r = TcostResult(family=family, n=n_bits, m=len(state),
-                    approach=f"rotation_{strategy}", precision_bits=precision_bits)
+    state: State, n_bits: int, tag: str, family: str, strategy: str,
+    timeout: float, precision_bits: int = 0,
+) -> Result:
+    r = Result(state_tag=tag, family=family, n=n_bits, m=len(state),
+               approach=f"rotation_{strategy}", precision_bits=precision_bits)
     start = time.monotonic()
     try:
         if strategy == "sparse":
@@ -160,9 +181,9 @@ def run_rotation(
         r.cnot_count = count_cnots(qc)
         r.qubit_count = qc.num_qubits
         r.gate_count = qc.size()
-        r.qc = qc
+        _fill_gate_counts(r, qc)
         if n_bits <= 10:
-            r.fidelity = _compute_fidelity(qc, state, n_bits)
+            r.fidelity = _fidelity_rotation(qc, state, n_bits)
         if precision_bits > 0 and r.ry_count > 0:
             r.gs_t_count = _gridsynth_t_count(qc, precision_bits)
     except Exception:
@@ -172,11 +193,12 @@ def run_rotation(
 
 
 def run_qrom(
-    state: State, n_bits: int, family: str, precision_bits: int, use_select_swap: bool
-) -> TcostResult:
+    state: State, n_bits: int, tag: str, family: str,
+    precision_bits: int, use_select_swap: bool,
+) -> Result:
     approach = "selectswap" if use_select_swap else "qrom"
-    r = TcostResult(family=family, n=n_bits, m=len(state), approach=approach,
-                    precision_bits=precision_bits)
+    r = Result(state_tag=tag, family=family, n=n_bits, m=len(state),
+               approach=approach, precision_bits=precision_bits)
     start = time.monotonic()
     try:
         res = synthesize_alias_sampling(state, n_bits, precision_bits, use_select_swap)
@@ -185,73 +207,71 @@ def run_qrom(
         r.cnot_count = res.cnot_count
         r.qubit_count = res.qubit_count
         r.gate_count = res.qc.size()
-        r.qc = res.qc
+        _fill_gate_counts(r, res.qc)
         if res.qc.num_qubits <= 25:
-            r.fidelity = _compute_fidelity_qrom(res.qc, state, n_bits)
+            r.fidelity = _fidelity_qrom(res.qc, state, n_bits)
     except Exception:
         r.success = False
         r.time_ms = (time.monotonic() - start) * 1000.0
     return r
 
 
-CSV_HEADER = [
-    "family", "n", "m", "approach", "precision_bits",
-    "t_count", "ry_count", "cnot_count", "qubit_count", "gate_count",
-    "time_ms", "fidelity", "success", "gs_t_count",
-]
+# ---------------------------------------------------------------------------
+# Benchmark orchestration
+# ---------------------------------------------------------------------------
 
-
-def run_benchmarks(args: argparse.Namespace) -> List[TcostResult]:
-    families = (
-        ["w", "dicke_2", "sparse_uniform", "sparse_random", "dense_uniform"]
-        if args.family == "all"
-        else [args.family]
-    )
-    precisions = [int(x) for x in args.precision.split(",")]
-    results: List[TcostResult] = []
-
-    for family in families:
-        max_n = args.n_max
-        if "dense" in family:
-            max_n = min(max_n, 12)
-
-        if args.verbose:
-            print(f"\nFamily: {family} (n={args.n_min}..{max_n})", file=sys.stderr)
-
-        for n in range(args.n_min, max_n + 1):
+def _state_iter(args):
+    """Yield (tag, family, state, n_bits) tuples from either --benchmarks-dir or generators."""
+    if args.benchmarks_dir:
+        bdir = Path(args.benchmarks_dir)
+        for p in sorted(bdir.glob("*.json")):
+            state, n_bits, meta = load_state(p)
+            family = meta.get("family", p.stem)
+            yield p.stem, family, state, n_bits
+    else:
+        families = (
+            list(FAMILIES.keys()) if args.family == "all" else [args.family]
+        )
+        for family in families:
+            max_n = min(args.n_max, 12) if "dense" in family else args.n_max
             is_random = "random" in family
-            num_runs = args.seeds if is_random else 1
+            for n in range(args.n_min, max_n + 1):
+                num_seeds = args.seeds if is_random else 1
+                for seed in range(1, num_seeds + 1):
+                    state, n_bits = generate_state(family, n, seed)
+                    tag = f"{family}_n{n}" + (f"_s{seed}" if is_random else "")
+                    yield tag, family, state, n_bits
 
-            for seed in range(1, num_runs + 1):
-                state, n_bits = generate_state(family, n, seed)
 
+def run_benchmarks(args) -> List[Result]:
+    precisions = [int(x) for x in args.precision.split(",")]
+    results: List[Result] = []
+
+    for tag, family, state, n_bits in _state_iter(args):
+        if args.verbose:
+            print(f"  {tag} (m={len(state)})", file=sys.stderr)
+
+        for b in precisions:
+            for strat in ["sparse", "dense"]:
+                r = run_rotation(state, n_bits, tag, family, strat,
+                                 args.timeout, precision_bits=b)
+                results.append(r)
                 if args.verbose:
-                    msg = f"  n={n}, m={len(state)}"
-                    if is_random:
-                        msg += f", seed={seed}"
-                    print(msg, file=sys.stderr)
+                    _print_result(r)
 
-                for b in precisions:
-                    for strat in ["sparse", "dense"]:
-                        r = run_rotation(state, n_bits, family, strat, args.timeout,
-                                         precision_bits=b)
-                        results.append(r)
-                        if args.verbose:
-                            _print_result(r)
-
-                    r_basic = run_qrom(state, n_bits, family, b, False)
-                    results.append(r_basic)
-                    if args.verbose:
-                        _print_result(r_basic)
-                    r_swap = run_qrom(state, n_bits, family, b, True)
-                    results.append(r_swap)
-                    if args.verbose:
-                        _print_result(r_swap)
+            r_basic = run_qrom(state, n_bits, tag, family, b, False)
+            results.append(r_basic)
+            if args.verbose:
+                _print_result(r_basic)
+            r_swap = run_qrom(state, n_bits, tag, family, b, True)
+            results.append(r_swap)
+            if args.verbose:
+                _print_result(r_swap)
 
     return results
 
 
-def _print_result(r: TcostResult) -> None:
+def _print_result(r: Result) -> None:
     status = "" if r.success else " [FAILED]"
     fid_str = f" fid={r.fidelity:.4f}" if r.fidelity > 0 else ""
     ry_str = f" Ry={r.ry_count:4d}" if r.ry_count > 0 else ""
@@ -264,75 +284,34 @@ def _print_result(r: TcostResult) -> None:
     )
 
 
-def write_csv(results: List[TcostResult], path: Path) -> None:
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def write_json(results: List[Result], path: Path) -> None:
+    data = [r.to_dict() for r in results]
+    path.write_text(json.dumps(data, indent=2))
+
+
+def write_csv(results: List[Result], path: Path) -> None:
+    import csv
+    header = [
+        "state_tag", "family", "n", "m", "approach", "precision_bits",
+        "t_count", "gs_t_count", "ry_count", "h_count", "s_count",
+        "x_count", "z_count", "cnot_count", "ccx_count", "rz_count",
+        "qubit_count", "gate_count", "time_ms", "fidelity", "success",
+    ]
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(CSV_HEADER)
+        w.writerow(header)
         for r in results:
-            w.writerow([
-                r.family, r.n, r.m, r.approach, r.precision_bits,
-                r.t_count, r.ry_count, r.cnot_count, r.qubit_count, r.gate_count,
-                f"{r.time_ms:.2f}", f"{r.fidelity:.6f}",
-                "true" if r.success else "false",
-                r.gs_t_count,
-            ])
+            d = asdict(r)
+            w.writerow([d[k] for k in header])
 
 
-def save_circuits(results: List[TcostResult], out_dir: Path) -> None:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from qiskit.qasm2 import dumps as qasm2_dumps
-
-    qasm_dir = out_dir / "qasm"
-    png_dir = out_dir / "png"
-    qasm_dir.mkdir(parents=True, exist_ok=True)
-    png_dir.mkdir(parents=True, exist_ok=True)
-
-    for r in results:
-        if r.qc is None or not r.success:
-            continue
-        b_tag = f"_b{r.precision_bits}" if r.precision_bits > 0 else ""
-        name = f"{r.family}_n{r.n}_{r.approach}{b_tag}"
-
-        qasm_path = qasm_dir / f"{name}.qasm"
-        qasm_path.write_text(qasm2_dumps(r.qc))
-
-        png_path = png_dir / f"{name}.png"
-        fig = r.qc.draw(output="mpl", fold=-1)
-        fig.savefig(str(png_path), dpi=150, bbox_inches="tight")
-        plt.close(fig)
-
-
-def _print_comparison_table(results: List[TcostResult]) -> None:
-    groups: Dict[tuple, List[TcostResult]] = {}
-    for r in results:
-        if not r.success:
-            continue
-        key = (r.family, r.n, r.precision_bits)
-        groups.setdefault(key, []).append(r)
-
-    print("\n=== T-count Comparison (Rotation gridsynth vs QROM) ===\n")
-    header = (f"{'state':>15s} {'approach':>18s} {'b':>3s}"
-              f" {'T':>8s} {'GS_T':>8s} {'Ry':>5s} {'CNOT':>6s} {'q':>4s}")
-    print(header)
-    print("-" * len(header))
-
-    prev_key = None
-    for key in sorted(groups.keys()):
-        if prev_key and (key[0], key[1]) != (prev_key[0], prev_key[1]):
-            print()
-        prev_key = key
-        for r in groups[key]:
-            t_str = str(r.t_count) if r.t_count > 0 else "-"
-            gs_str = str(r.gs_t_count) if r.gs_t_count > 0 else "-"
-            ry_str = str(r.ry_count) if r.ry_count > 0 else "-"
-            print(
-                f"{r.family+'_'+str(r.n):>15s} {r.approach:>18s} {r.precision_bits:3d}"
-                f" {t_str:>8s} {gs_str:>8s} {ry_str:>5s} {r.cnot_count:>6d}"
-                f" {r.qubit_count:>4d}"
-            )
-
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="QSP T-cost comparison benchmark")
@@ -344,22 +323,32 @@ def main() -> None:
     parser.add_argument("-t", "--timeout", type=float, default=120.0)
     parser.add_argument("-o", "--output", default=None)
     parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("--save-circuits", action="store_true",
-                        help="Save circuits as QASM and PNG")
+    # JSON / benchmarks
+    parser.add_argument("--benchmarks-dir", default=None,
+                        help="Load states from JSON files in this directory")
+    parser.add_argument("--dump-benchmarks", default=None, metavar="DIR",
+                        help="Generate benchmark states as JSON and exit")
+    parser.add_argument("--json", action="store_true",
+                        help="Output results as JSON instead of CSV")
     args = parser.parse_args()
+
+    # Dump benchmarks and exit
+    if args.dump_benchmarks:
+        written = dump_benchmarks(
+            args.dump_benchmarks, args.n_min, args.n_max, args.seeds,
+        )
+        print(f"Wrote {len(written)} benchmark files to {args.dump_benchmarks}")
+        return
 
     results = run_benchmarks(args)
 
-    out_path = Path(args.output) if args.output else Path("qsp_t_cost_results.csv")
-    write_csv(results, out_path)
+    suffix = ".json" if args.json else ".csv"
+    out_path = Path(args.output) if args.output else Path(f"qsp_t_cost_results{suffix}")
+    if args.json:
+        write_json(results, out_path)
+    else:
+        write_csv(results, out_path)
     print(f"Wrote {len(results)} rows to {out_path}")
-
-    if args.save_circuits:
-        circ_dir = out_path.parent / "circuits"
-        save_circuits(results, circ_dir)
-        print(f"Saved circuits to {circ_dir}")
-
-    _print_comparison_table(results)
 
 
 if __name__ == "__main__":
