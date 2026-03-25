@@ -113,9 +113,7 @@ def qubit_reduction_by_one(
 
     angles: List[float] = []
     for w0, w1 in rot_table:
-        if abs(w0) < EPS:
-            angles.append(math.pi)
-        elif abs(w1) < EPS:
+        if abs(w0) < EPS and abs(w1) < EPS:
             angles.append(0.0)
         else:
             angles.append(2.0 * math.atan2(w1, w0))

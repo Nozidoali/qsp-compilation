@@ -8,3 +8,5 @@ build/
 .cache/
 results*/
 *.csv
+*.png
+comparison_summary.md
