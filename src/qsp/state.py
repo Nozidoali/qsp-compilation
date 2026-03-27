@@ -10,7 +10,7 @@ import json
 import math
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -137,15 +137,9 @@ def random_dense_state(n_bits: int, seed: int = 42) -> Tuple[State, int]:
 
 # --- JSON serialization ---
 
-def state_to_json(state: State, n_bits: int, **meta: Any) -> dict:
-    """Serialize a state to a JSON-compatible dict.
-
-    Extra keyword arguments are stored under ``"meta"``.
-    """
-    obj: dict = {"n_bits": n_bits, "amplitudes": {str(k): v for k, v in state.items()}}
-    if meta:
-        obj["meta"] = meta
-    return obj
+def state_to_json(state: State, n_bits: int) -> dict:
+    """Serialize a state to a JSON-compatible dict."""
+    return {"n_bits": n_bits, "amplitudes": {str(k): v for k, v in state.items()}}
 
 
 def state_from_json(obj: dict) -> Tuple[State, int]:
@@ -155,16 +149,15 @@ def state_from_json(obj: dict) -> Tuple[State, int]:
     return state, n_bits
 
 
-def save_state(path: str | Path, state: State, n_bits: int, **meta: Any) -> None:
+def save_state(path: str | Path, state: State, n_bits: int) -> None:
     """Write a single state to a JSON file."""
-    Path(path).write_text(json.dumps(state_to_json(state, n_bits, **meta), indent=2))
+    Path(path).write_text(json.dumps(state_to_json(state, n_bits), indent=2))
 
 
-def load_state(path: str | Path) -> Tuple[State, int, dict]:
-    """Read a state from a JSON file.  Returns ``(state, n_bits, meta)``."""
+def load_state(path: str | Path) -> Tuple[State, int]:
+    """Read a state from a JSON file."""
     obj = json.loads(Path(path).read_text())
-    state, n_bits = state_from_json(obj)
-    return state, n_bits, obj.get("meta", {})
+    return state_from_json(obj)
 
 
 # --- Benchmark suite generation ---
@@ -205,11 +198,8 @@ def dump_benchmarks(
             for s in range(1, num_seeds + 1):
                 state, n_bits = gen(n, s)
                 tag = f"{fam}_n{n}" + (f"_s{s}" if is_random else "")
-                meta = {"family": fam, "n": n}
-                if is_random:
-                    meta["seed"] = s
                 p = out / f"{tag}.json"
-                save_state(p, state, n_bits, **meta)
+                save_state(p, state, n_bits)
                 written.append(p)
 
     return written

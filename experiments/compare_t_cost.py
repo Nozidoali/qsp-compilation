@@ -21,7 +21,7 @@ import time
 import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 from qiskit.quantum_info import Statevector
@@ -35,7 +35,6 @@ from qsp.state import (
     State,
     dump_benchmarks,
     load_state,
-    state_to_json,
     to_statevector,
 )
 
@@ -225,8 +224,10 @@ def _state_iter(args):
     if args.benchmarks_dir:
         bdir = Path(args.benchmarks_dir)
         for p in sorted(bdir.glob("*.json")):
-            state, n_bits, meta = load_state(p)
-            family = meta.get("family", p.stem)
+            state, n_bits = load_state(p)
+            # infer family from filename: e.g. "w_n3" -> "w", "sparse_random_n5_s1" -> "sparse_random"
+            parts = p.stem.rsplit("_n", 1)
+            family = parts[0] if len(parts) > 1 else p.stem
             yield p.stem, family, state, n_bits
     else:
         families = (
