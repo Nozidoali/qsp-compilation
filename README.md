@@ -7,8 +7,11 @@ Quantum state preparation algorithms in Python/Qiskit: rotation-based (sparse & 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
 pip install -e .
 ```
+
+Dependencies are pinned in `requirements.txt`. Key version: `pygridsynth==2.0.0` (Clifford+T decomposition via gridsynth).
 
 ## Quick Start
 

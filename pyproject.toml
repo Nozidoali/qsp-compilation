@@ -7,12 +7,16 @@ name = "qsp"
 version = "0.1.0"
 description = "Quantum State Preparation: rotation-based and QROM-based algorithms"
 dependencies = [
-    "qiskit>=1.2.0",
-    "numpy>=1.24",
+    "qiskit>=1.2.0,<3.0",
+    "numpy>=1.24,<3.0",
     "matplotlib>=3.7",
     "pandas>=2.0",
     "pytest>=7.0",
-    "pygridsynth>=0.2",
+    "pygridsynth==2.0.0",
+    "mpmath>=1.3",
+    "numba>=0.59",
+    "cvxpy>=1.4",
+    "scipy>=1.10",
 ]
 
 [tool.setuptools.packages.find]
