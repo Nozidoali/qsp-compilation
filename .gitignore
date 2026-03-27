@@ -7,8 +7,8 @@ build/
 .mplconfig/
 .cache/
 results*/
-benchmarks/
 *.csv
 *.json
+!benchmarks/*.json
 *.png
 comparison_summary.md
