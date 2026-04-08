@@ -18,6 +18,7 @@ import json
 import math
 import sys
 import time
+import traceback
 import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -185,8 +186,10 @@ def run_rotation(
             r.fidelity = _fidelity_rotation(qc, state, n_bits)
         if precision_bits > 0 and r.ry_count > 0:
             r.gs_t_count = _gridsynth_t_count(qc, precision_bits)
-    except Exception:
+    except Exception as e:
         r.success = False
+        print(f"Error in rotation: {e}")
+        traceback.print_exc()
         r.time_ms = (time.monotonic() - start) * 1000.0
     return r
 
