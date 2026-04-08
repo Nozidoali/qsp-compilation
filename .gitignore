@@ -1,5 +1,6 @@
 .venv/
 __pycache__/
+.DS_Store
 *.py[cod]
 *.egg-info/
 dist/
@@ -12,3 +13,7 @@ results*/
 !benchmarks/*.json
 *.png
 comparison_summary.md
+
+# Large Lee THC reference datasets (keep local, don't track in git history)
+states/THC_Fomoco/Lee_code/**/*.h5
+states/THC_Fomoco/Lee_code/**/*.nb
