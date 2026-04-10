@@ -22,6 +22,7 @@ from experiments.compare_t_cost import (
     _fidelity_rotation,
     _gridsynth_t_count,
 )
+from qsp.circuit_utils import decompose_to_clifford_t
 from qsp.metrics import count_cnots, count_ry, estimate_t_count
 from qsp.qrom.alias_sampling import synthesize_alias_sampling
 from qsp.rotation.dense import prepare_state_dense
@@ -54,6 +55,7 @@ def compile_state(
             r = Result(state_tag=tag, family=family, n=n_bits, m=len(state),
                        approach=approach, precision_bits=b)
             qasm_str = None
+            qasm_ct_str = None
             start = time.monotonic()
 
             try:
@@ -75,6 +77,9 @@ def compile_state(
                     if b > 0 and r.ry_count > 0:
                         r.gs_t_count = _gridsynth_t_count(qc, b)
                     qasm_str = qasm2_dumps(qc)
+                    if b > 0:
+                        qc_ct = decompose_to_clifford_t(qc, b)
+                        qasm_ct_str = qasm2_dumps(qc_ct)
                 else:
                     use_select_swap = approach == "selectswap"
                     res = synthesize_alias_sampling(state, n_bits, b, use_select_swap)
@@ -87,12 +92,18 @@ def compile_state(
                     if res.qc.num_qubits <= 25:
                         r.fidelity = _fidelity_qrom(res.qc, state, n_bits)
                     qasm_str = qasm2_dumps(res.qc)
+                    # Native Clifford+T QROM (AND gates instead of CCX)
+                    res_ct = synthesize_alias_sampling(
+                        state, n_bits, b, use_select_swap, clifford_t=True,
+                    )
+                    qasm_ct_str = qasm2_dumps(res_ct.qc)
             except Exception:
                 r.success = False
                 r.time_ms = (time.monotonic() - start) * 1000.0
 
             d = r.to_dict()
             d["qasm"] = qasm_str
+            d["qasm_ct"] = qasm_ct_str
             outputs.append(d)
 
             if verbose:
@@ -109,19 +120,29 @@ def compile_state(
 
 
 def write_outputs(outputs: list[dict], out_dir: Path, tag: str) -> None:
-    """Write QASM files and a combined stats JSON to out_dir."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    """Write QASM files and a combined stats JSON to out_dir.
+
+    Original circuits go to out_dir/original/, Clifford+T circuits
+    go to out_dir/clifford_t/.
+    """
+    orig_dir = out_dir / "original"
+    ct_dir = out_dir / "clifford_t"
+    orig_dir.mkdir(parents=True, exist_ok=True)
+    ct_dir.mkdir(parents=True, exist_ok=True)
 
     stats = []
     for entry in outputs:
         qasm_str = entry.pop("qasm", None)
+        qasm_ct_str = entry.pop("qasm_ct", None)
         approach = entry.get("approach", "unknown")
         b = entry.get("precision_bits", 0)
         suffix = f"{approach}_b{b}"
 
         if qasm_str:
-            qasm_path = out_dir / f"{tag}_{suffix}.qasm"
-            qasm_path.write_text(qasm_str)
+            (orig_dir / f"{tag}_{suffix}.qasm").write_text(qasm_str)
+
+        if qasm_ct_str:
+            (ct_dir / f"{tag}_{suffix}.qasm").write_text(qasm_ct_str)
 
         stats.append(entry)
 

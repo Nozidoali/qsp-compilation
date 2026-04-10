@@ -3,9 +3,98 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from qiskit.circuit import QuantumCircuit
+
+
+# ---------------------------------------------------------------------------
+# Gidney AND gate (4T Toffoli building block)
+# Reference: https://arxiv.org/abs/1709.06648
+# ---------------------------------------------------------------------------
+
+def and_compute(qc: QuantumCircuit, c0: int, c1: int, anc: int) -> None:
+    """Compute ``anc = c0 AND c1`` using 4 T gates.  Ancilla must start at |0>."""
+    qc.h(anc)
+    qc.cx(c0, anc)
+    qc.tdg(anc)
+    qc.cx(c1, anc)
+    qc.t(anc)
+    qc.cx(c0, anc)
+    qc.tdg(anc)
+    qc.cx(c1, anc)
+    qc.t(anc)
+    qc.h(anc)
+
+
+def and_uncompute(qc: QuantumCircuit, c0: int, c1: int, anc: int) -> None:
+    """Uncompute AND (adjoint of :func:`and_compute`).  Returns ancilla to |0>."""
+    qc.h(anc)
+    qc.tdg(anc)
+    qc.cx(c1, anc)
+    qc.t(anc)
+    qc.cx(c0, anc)
+    qc.tdg(anc)
+    qc.cx(c1, anc)
+    qc.t(anc)
+    qc.cx(c0, anc)
+    qc.h(anc)
+
+
+def ccx_via_and(
+    qc: QuantumCircuit, c0: int, c1: int, tgt: int, anc: int,
+) -> None:
+    """Toffoli via AND compute + CNOT + AND uncompute (8T, no measurement)."""
+    and_compute(qc, c0, c1, anc)
+    qc.cx(anc, tgt)
+    and_uncompute(qc, c0, c1, anc)
+
+
+# ---------------------------------------------------------------------------
+# Clifford+T versions of circuit primitives
+# ---------------------------------------------------------------------------
+
+def add_comparator_ct(
+    qc: QuantumCircuit,
+    a_qubits: List[int],
+    b_qubits: List[int],
+    flag_qubit: int,
+    ancillae: List[int],
+) -> int:
+    """Comparator (a < b) using AND gates instead of CCX.  Returns T-count."""
+    bits = len(a_qubits)
+    t_count = 0
+    for i in range(bits):
+        qc.x(a_qubits[i])
+    for i in range(bits):
+        qc.cx(flag_qubit, b_qubits[i])
+        qc.cx(flag_qubit, a_qubits[i])
+        and_compute(qc, a_qubits[i], b_qubits[i], ancillae[i])
+        qc.cx(ancillae[i], flag_qubit)
+        and_uncompute(qc, a_qubits[i], b_qubits[i], ancillae[i])
+        t_count += 8
+    return t_count
+
+
+def add_controlled_swap_ct(
+    qc: QuantumCircuit,
+    ctrl: int,
+    reg_a: List[int],
+    reg_b: List[int],
+    ancillae: List[int],
+) -> Tuple[int, int]:
+    """Controlled swap using AND gates instead of CCX.  Returns (t_count, cx_count)."""
+    t_count = 0
+    cx_count = 0
+    for i in range(len(reg_a)):
+        qc.cx(reg_a[i], reg_b[i])
+        and_compute(qc, ctrl, reg_b[i], ancillae[i])
+        qc.cx(ancillae[i], reg_a[i])
+        and_uncompute(qc, ctrl, reg_b[i], ancillae[i])
+        qc.cx(reg_a[i], reg_b[i])
+        t_count += 8
+        cx_count += 2
+    return t_count, cx_count
 
 
 def add_comparator(
@@ -136,12 +225,13 @@ def decompose_to_clifford_t(
     qc: QuantumCircuit,
     precision_bits: int,
 ) -> QuantumCircuit:
-    """Replace RY gates with Clifford+T sequences via gridsynth.
+    """Decompose rotation gates (RY, CRY, RZ) to Clifford+T via gridsynth.
 
     Identity: RY(θ) = S† · H · Rz(θ) · H · S
-    Circuit order: sdg, h, [gridsynth Rz gates], h, s
 
-    Other gates (x, cx, ccx, h, s, t, etc.) are copied as-is.
+    Other gates (X, CX, H, S, T, etc.) are copied as-is.
+    For CCX decomposition, use the native Clifford+T synthesis in
+    :mod:`qsp.qrom.synthesis` instead.
     """
     flat = _flatten(qc)
     out = QuantumCircuit(flat.num_qubits)
@@ -152,14 +242,11 @@ def decompose_to_clifford_t(
 
         if name == "ry":
             theta = float(instr.operation.params[0])
-            # Trivial: theta ~ 0 → skip
             if abs(theta) < 1e-12:
                 continue
-            # Trivial: theta ~ ±π → X gate
             if abs(abs(theta) - math.pi) < 1e-12:
                 out.x(qubits[0])
                 continue
-            # RY(θ) = S† · H · Rz(θ) · H · S
             q = qubits[0]
             out.sdg(q)
             out.h(q)
@@ -172,10 +259,8 @@ def decompose_to_clifford_t(
             theta = float(instr.operation.params[0])
             if abs(theta) < 1e-12:
                 continue
-            # Decompose CRY into: RY(θ/2) on target, CX, RY(-θ/2) on target, CX
             ctrl, tgt = qubits
             half = theta / 2.0
-            # Emit RY(θ/2) as Clifford+T
             out.sdg(tgt)
             out.h(tgt)
             gate_str = _gridsynth_decompose(half, precision_bits)
@@ -183,7 +268,6 @@ def decompose_to_clifford_t(
             out.h(tgt)
             out.s(tgt)
             out.cx(ctrl, tgt)
-            # Emit RY(-θ/2) as Clifford+T
             out.sdg(tgt)
             out.h(tgt)
             gate_str = _gridsynth_decompose(-half, precision_bits)
@@ -202,17 +286,14 @@ def decompose_to_clifford_t(
                 _emit_gridsynth_gates(out, gate_str, q)
 
         elif name == "u":
-            # U(θ, φ, λ) = Rz(φ) · RY(θ) · Rz(λ)
             theta = float(instr.operation.params[0])
             phi = float(instr.operation.params[1])
             lam = float(instr.operation.params[2])
             q = qubits[0]
-            # Rz(λ)
             if abs(lam) > 1e-12:
                 if not _emit_clifford_rz(out, lam, q):
                     gate_str = _gridsynth_decompose(lam, precision_bits)
                     _emit_gridsynth_gates(out, gate_str, q)
-            # RY(θ)
             if abs(theta) < 1e-12:
                 pass
             elif abs(abs(theta) - math.pi) < 1e-12:
@@ -224,14 +305,12 @@ def decompose_to_clifford_t(
                 _emit_gridsynth_gates(out, gate_str, q)
                 out.h(q)
                 out.s(q)
-            # Rz(φ)
             if abs(phi) > 1e-12:
                 if not _emit_clifford_rz(out, phi, q):
                     gate_str = _gridsynth_decompose(phi, precision_bits)
                     _emit_gridsynth_gates(out, gate_str, q)
 
         else:
-            # Copy gate as-is
             out.append(instr.operation, qubits)
 
     return out

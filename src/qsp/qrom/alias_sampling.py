@@ -15,7 +15,10 @@ from typing import List
 
 from qiskit.circuit import QuantumCircuit
 
-from qsp.circuit_utils import add_comparator, add_controlled_swap
+from qsp.circuit_utils import (
+    add_comparator, add_comparator_ct,
+    add_controlled_swap, add_controlled_swap_ct,
+)
 from qsp.qrom.synthesis import (
     QROMResult,
     compute_optimal_lambda,
@@ -104,6 +107,7 @@ def synthesize_alias_sampling(
     precision_bits: int = 8,
     use_select_swap: bool = True,
     clean_ancilla: bool = True,
+    clifford_t: bool = False,
 ) -> AliasSamplingResult:
     start = time.monotonic()
 
@@ -116,11 +120,13 @@ def synthesize_alias_sampling(
         table.keep_values, n, b,
         use_select_swap=use_select_swap,
         clean_ancilla=clean_ancilla,
+        clifford_t=clifford_t,
     )
     alias_res = synthesize_qrom(
         table.alias_indices, n, n,
         use_select_swap=use_select_swap,
         clean_ancilla=clean_ancilla,
+        clifford_t=clifford_t,
     )
 
     nq = 0
@@ -137,6 +143,13 @@ def synthesize_alias_sampling(
     nq += alias_res.qc.num_qubits
     alias_out = [alias_start + alias_res.output_qubits[i] for i in range(n)]
 
+    # Allocate ancillae for comparator and controlled-swap if Clifford+T mode
+    compare_anc = []
+    cswap_anc = []
+    if clifford_t:
+        compare_anc = list(range(nq, nq + b)); nq += b
+        cswap_anc = list(range(nq, nq + n)); nq += n
+
     qc = QuantumCircuit(nq)
 
     for i in range(n):
@@ -149,30 +162,50 @@ def synthesize_alias_sampling(
         keep_map[keep_res.input_qubits[i]] = addr[i]
     qc.compose(keep_res.qc, qubits=keep_map, inplace=True)
 
-    compare_ccx = add_comparator(qc, keep_out, rand_q, flag)
+    if clifford_t:
+        compare_t = add_comparator_ct(qc, keep_out, rand_q, flag, compare_anc)
+    else:
+        compare_ccx = add_comparator(qc, keep_out, rand_q, flag)
 
     alias_map = list(range(alias_start, alias_start + alias_res.qc.num_qubits))
     for i in range(n):
         alias_map[alias_res.input_qubits[i]] = addr[i]
     qc.compose(alias_res.qc, qubits=alias_map, inplace=True)
 
-    cswap_ccx, cswap_cx = add_controlled_swap(qc, flag, addr, alias_out)
+    if clifford_t:
+        cswap_t, cswap_cx = add_controlled_swap_ct(qc, flag, addr, alias_out, cswap_anc)
+    else:
+        cswap_ccx, cswap_cx = add_controlled_swap(qc, flag, addr, alias_out)
 
-    t_per_ccx = 4 if clean_ancilla else 7
     elapsed = (time.monotonic() - start) * 1000.0
 
-    result = AliasSamplingResult(
-        qc=qc,
-        t_count=(keep_res.t_count + alias_res.t_count +
-                 compare_ccx * t_per_ccx + cswap_ccx * t_per_ccx),
-        cnot_count=qc.count_ops().get("cx", 0),
-        qubit_count=nq,
-        keep_qrom_t=keep_res.t_count,
-        alias_qrom_t=alias_res.t_count,
-        compare_t=compare_ccx * t_per_ccx,
-        cswap_t=cswap_ccx * t_per_ccx,
-        compile_time_ms=elapsed,
-    )
+    if clifford_t:
+        total_t = keep_res.t_count + alias_res.t_count + compare_t + cswap_t
+        result = AliasSamplingResult(
+            qc=qc,
+            t_count=total_t,
+            cnot_count=qc.count_ops().get("cx", 0),
+            qubit_count=nq,
+            keep_qrom_t=keep_res.t_count,
+            alias_qrom_t=alias_res.t_count,
+            compare_t=compare_t,
+            cswap_t=cswap_t,
+            compile_time_ms=elapsed,
+        )
+    else:
+        t_per_ccx = 4 if clean_ancilla else 7
+        result = AliasSamplingResult(
+            qc=qc,
+            t_count=(keep_res.t_count + alias_res.t_count +
+                     compare_ccx * t_per_ccx + cswap_ccx * t_per_ccx),
+            cnot_count=qc.count_ops().get("cx", 0),
+            qubit_count=nq,
+            keep_qrom_t=keep_res.t_count,
+            alias_qrom_t=alias_res.t_count,
+            compare_t=compare_ccx * t_per_ccx,
+            cswap_t=cswap_ccx * t_per_ccx,
+            compile_time_ms=elapsed,
+        )
     return result
 
 

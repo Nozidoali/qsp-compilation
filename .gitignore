@@ -7,12 +7,16 @@ dist/
 build/
 .mplconfig/
 .cache/
+
+# Output / results (regenerable)
+output/
 results*/
 *.csv
-*.json
-!benchmarks/*.json
 *.png
 comparison_summary.md
+
+# Benchmark states are tracked
+!benchmarks/**/*.json
 
 # Large Lee THC reference datasets (keep local, don't track in git history)
 states/THC_Fomoco/Lee_code/**/*.h5
