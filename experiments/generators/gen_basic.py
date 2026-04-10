@@ -3,7 +3,7 @@
 Usage
 -----
     python -m experiments.generators.gen_basic
-    python -m experiments.generators.gen_basic -o benchmarks/ --n-max 6 -f w,dicke_2
+    python -m experiments.generators.gen_basic -o benchmarks/basic/ --n-max 6 -f w,dicke_2
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ def main() -> None:
         description="Generate basic benchmark states as JSON"
     )
     parser.add_argument("-o", "--out-dir", type=Path,
-                        default=Path("benchmarks"),
-                        help="Output directory (default: benchmarks/)")
+                        default=Path("benchmarks/basic"),
+                        help="Output directory (default: benchmarks/basic/)")
     parser.add_argument("--n-min", type=int, default=3)
     parser.add_argument("--n-max", type=int, default=8)
     parser.add_argument("-s", "--seeds", type=int, default=3,
