@@ -152,7 +152,7 @@ def prepare_state_to_sparse_dict(
 def state_to_json_dict(state: Dict[int, float], n_bits: int, metadata: Dict[str, object]) -> Dict[str, object]:
     payload: Dict[str, object] = {
         "n_bits": n_bits,
-        "amplitudes": {str(index): amplitude for index, amplitude in sorted(state.items())},
+        "amplitudes": {format(index, f"0{n_bits}b"): amplitude for index, amplitude in sorted(state.items())},
     }
     payload.update(metadata)
     return payload

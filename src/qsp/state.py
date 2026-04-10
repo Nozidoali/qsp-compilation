@@ -138,14 +138,38 @@ def random_dense_state(n_bits: int, seed: int = 42) -> Tuple[State, int]:
 # --- JSON serialization ---
 
 def state_to_json(state: State, n_bits: int) -> dict:
-    """Serialize a state to a JSON-compatible dict."""
-    return {"n_bits": n_bits, "amplitudes": {str(k): v for k, v in state.items()}}
+    """Serialize a state to a JSON-compatible dict.
+
+    Keys in ``amplitudes`` are zero-padded binary strings of length *n_bits*,
+    e.g. ``"001"`` for index 1 with 3 qubits.
+    """
+    return {
+        "n_bits": n_bits,
+        "amplitudes": {
+            format(k, f"0{n_bits}b"): v for k, v in state.items()
+        },
+    }
+
+
+def _is_binary_format(amplitudes: dict, n_bits: int) -> bool:
+    """Detect whether amplitude keys are binary strings of length *n_bits*."""
+    if not amplitudes:
+        return False
+    first = next(iter(amplitudes))
+    return len(first) == n_bits and all(c in "01" for c in first)
 
 
 def state_from_json(obj: dict) -> Tuple[State, int]:
-    """Deserialize a state from a JSON-compatible dict."""
+    """Deserialize a state from a JSON-compatible dict.
+
+    Accepts both binary keys (``"010"``) and legacy decimal keys (``"2"``).
+    """
     n_bits = obj["n_bits"]
-    state: State = {int(k): float(v) for k, v in obj["amplitudes"].items()}
+    amps = obj["amplitudes"]
+    if _is_binary_format(amps, n_bits):
+        state: State = {int(k, 2): float(v) for k, v in amps.items()}
+    else:
+        state = {int(k): float(v) for k, v in amps.items()}
     return state, n_bits
 
 
