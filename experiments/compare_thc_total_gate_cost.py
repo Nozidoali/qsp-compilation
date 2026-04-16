@@ -15,19 +15,18 @@ Usage
 from __future__ import annotations
 
 import argparse
-import csv
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
-from experiments.compare_t_cost import run_qrom, run_rotation
+from experiments.compare_t_cost import ALL_APPROACHES, run_approach
 from qsp.state import load_state
 
 
 DEFAULT_BENCHMARKS_DIR = Path("states/THC_Fomoco/data")
-APPROACH_CHOICES = ("sparse", "dense", "qrom", "selectswap")
+APPROACH_CHOICES = ALL_APPROACHES
 FAMILY_CHOICES = ("li", "reiher")
 SOURCE_CHOICES = ("approximated", "exact")
 
@@ -101,83 +100,19 @@ def iter_thc_files(
     return files
 
 
+CSV_COLUMNS = [
+    "state_tag", "file_name", "family", "source", "M", "n", "m",
+    "approach", "precision_bits", "total_gate_cost",
+    "t_count", "cnot_count", "h_count", "s_count",
+    "qubit_count", "gate_count", "time_ms", "success",
+]
+
+
 def write_csv(records: List[THCCostRecord], out_path: Path) -> None:
-    header = [
-        "state_tag",
-        "file_name",
-        "family",
-        "source",
-        "M",
-        "n",
-        "m",
-        "approach",
-        "precision_bits",
-        "total_gate_cost",
-        "t_count",
-        "cnot_count",
-        "h_count",
-        "s_count",
-        "qubit_count",
-        "gate_count",
-        "time_ms",
-        "success",
-    ]
-    with open(out_path, "w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(header)
-        for record in records:
-            writer.writerow(
-                [
-                    record.state_tag,
-                    record.file_name,
-                    record.family,
-                    record.source,
-                    record.M,
-                    record.n,
-                    record.m,
-                    record.approach,
-                    record.precision_bits,
-                    record.total_gate_cost,
-                    record.t_count,
-                    record.cnot_count,
-                    record.h_count,
-                    record.s_count,
-                    record.qubit_count,
-                    record.gate_count,
-                    f"{record.time_ms:.3f}",
-                    record.success,
-                ]
-            )
-
-
-def run_single_approach(
-    *,
-    approach: str,
-    state,
-    n_bits: int,
-    state_tag: str,
-    family: str,
-    precision_bits: int,
-    timeout: float,
-):
-    if approach in ("sparse", "dense"):
-        return run_rotation(
-            state,
-            n_bits,
-            state_tag,
-            family,
-            strategy=approach,
-            timeout=timeout,
-            precision_bits=precision_bits,
-        )
-    use_select_swap = approach == "selectswap"
-    return run_qrom(
-        state,
-        n_bits,
-        state_tag,
-        family,
-        precision_bits=precision_bits,
-        use_select_swap=use_select_swap,
+    from experiments.csv_utils import write_dataclass_csv
+    write_dataclass_csv(
+        records, out_path, CSV_COLUMNS,
+        formatters={"time_ms": lambda v: f"{v:.3f}"},
     )
 
 
@@ -289,12 +224,12 @@ def main() -> None:
                         f"({approach}, b={precision_bits}, m={len(state)})",
                         file=sys.stderr,
                     )
-                result = run_single_approach(
-                    approach=approach,
-                    state=state,
-                    n_bits=n_bits,
-                    state_tag=state_tag,
-                    family=family,
+                result, _ = run_approach(
+                    approach,
+                    state,
+                    n_bits,
+                    state_tag,
+                    family,
                     precision_bits=precision_bits,
                     timeout=args.timeout,
                 )

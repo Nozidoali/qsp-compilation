@@ -20,7 +20,7 @@ import sys
 import time
 import traceback
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -41,6 +41,16 @@ from qsp.state import (
     dump_benchmarks,
     load_state,
 )
+
+
+# Canonical approach names. Used by all experiment scripts and recorded in CSV/JSON.
+SPARSE = "sparse"
+DENSE = "dense"
+QROM = "qrom"
+SELECTSWAP = "selectswap"
+ROTATION_APPROACHES = (SPARSE, DENSE)
+QROM_APPROACHES = (QROM, SELECTSWAP)
+ALL_APPROACHES = ROTATION_APPROACHES + QROM_APPROACHES
 
 
 @dataclass
@@ -139,18 +149,11 @@ def _fill_gate_counts(r: Result, qc) -> None:
     r.rz_count = ct["rz"]
 
 
-def run_rotation(
-    state: State, n_bits: int, tag: str, family: str, strategy: str,
-    timeout: float, precision_bits: int = 0,
-) -> Result:
-    r = Result(state_tag=tag, family=family, n=n_bits, m=len(state),
-               approach=f"rotation_{strategy}", precision_bits=precision_bits)
+def _run_rotation(state: State, n_bits: int, r: Result, timeout: float, precision_bits: int):
     start = time.monotonic()
     try:
-        if strategy == "sparse":
-            qc = prepare_state_sparse(state, n_bits, timeout)
-        else:
-            qc = prepare_state_dense(state, n_bits, timeout)
+        prep = prepare_state_sparse if r.approach == SPARSE else prepare_state_dense
+        qc = prep(state, n_bits, timeout)
         r.time_ms = (time.monotonic() - start) * 1000.0
         r.t_count = estimate_t_count(qc)
         r.ry_count = count_ry(qc)
@@ -162,24 +165,21 @@ def run_rotation(
             r.fidelity = rotation_fidelity(qc, state, n_bits)
         if precision_bits > 0 and r.ry_count > 0:
             r.gs_t_count = _gridsynth_t_count(qc, precision_bits)
+        return qc
     except Exception as e:
         r.success = False
         print(f"Error in rotation: {e}")
         traceback.print_exc()
         r.time_ms = (time.monotonic() - start) * 1000.0
-    return r
+        return None
 
 
-def run_qrom(
-    state: State, n_bits: int, tag: str, family: str,
-    precision_bits: int, use_select_swap: bool,
-) -> Result:
-    approach = "selectswap" if use_select_swap else "qrom"
-    r = Result(state_tag=tag, family=family, n=n_bits, m=len(state),
-               approach=approach, precision_bits=precision_bits)
+def _run_qrom(state: State, n_bits: int, r: Result, precision_bits: int):
     start = time.monotonic()
     try:
-        res = synthesize_alias_sampling(state, n_bits, precision_bits, use_select_swap)
+        res = synthesize_alias_sampling(
+            state, n_bits, precision_bits, use_select_swap=(r.approach == SELECTSWAP),
+        )
         r.time_ms = res.compile_time_ms
         r.t_count = res.t_count
         r.cnot_count = res.cnot_count
@@ -188,10 +188,27 @@ def run_qrom(
         _fill_gate_counts(r, res.qc)
         if res.qc.num_qubits <= 25:
             r.fidelity = qrom_marginal_fidelity(res.qc, state, n_bits)
+        return res.qc
     except Exception:
         r.success = False
         r.time_ms = (time.monotonic() - start) * 1000.0
-    return r
+        return None
+
+
+def run_approach(
+    approach: str, state: State, n_bits: int, tag: str, family: str,
+    precision_bits: int, timeout: float = 120.0,
+) -> tuple[Result, "QuantumCircuit | None"]:
+    """Run a single approach. Returns (Result, compiled circuit or None on failure)."""
+    if approach not in ALL_APPROACHES:
+        raise ValueError(f"Unknown approach {approach!r}; choose from {ALL_APPROACHES}")
+    r = Result(state_tag=tag, family=family, n=n_bits, m=len(state),
+               approach=approach, precision_bits=precision_bits)
+    if approach in ROTATION_APPROACHES:
+        qc = _run_rotation(state, n_bits, r, timeout, precision_bits)
+    else:
+        qc = _run_qrom(state, n_bits, r, precision_bits)
+    return r, qc
 
 
 # ---------------------------------------------------------------------------
@@ -232,21 +249,12 @@ def run_benchmarks(args) -> List[Result]:
             print(f"  {tag} (m={len(state)})", file=sys.stderr)
 
         for b in precisions:
-            for strat in ["sparse", "dense"]:
-                r = run_rotation(state, n_bits, tag, family, strat,
-                                 args.timeout, precision_bits=b)
+            for approach in ALL_APPROACHES:
+                r, _ = run_approach(approach, state, n_bits, tag, family,
+                                    precision_bits=b, timeout=args.timeout)
                 results.append(r)
                 if args.verbose:
                     _print_result(r)
-
-            r_basic = run_qrom(state, n_bits, tag, family, b, False)
-            results.append(r_basic)
-            if args.verbose:
-                _print_result(r_basic)
-            r_swap = run_qrom(state, n_bits, tag, family, b, True)
-            results.append(r_swap)
-            if args.verbose:
-                _print_result(r_swap)
 
     return results
 
@@ -273,20 +281,17 @@ def write_json(results: List[Result], path: Path) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
+CSV_COLUMNS = [
+    "state_tag", "family", "n", "m", "approach", "precision_bits",
+    "t_count", "gs_t_count", "ry_count", "h_count", "s_count",
+    "x_count", "z_count", "cnot_count", "ccx_count", "rz_count",
+    "qubit_count", "gate_count", "time_ms", "fidelity", "success",
+]
+
+
 def write_csv(results: List[Result], path: Path) -> None:
-    import csv
-    header = [
-        "state_tag", "family", "n", "m", "approach", "precision_bits",
-        "t_count", "gs_t_count", "ry_count", "h_count", "s_count",
-        "x_count", "z_count", "cnot_count", "ccx_count", "rz_count",
-        "qubit_count", "gate_count", "time_ms", "fidelity", "success",
-    ]
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        for r in results:
-            d = asdict(r)
-            w.writerow([d[k] for k in header])
+    from experiments.csv_utils import write_dataclass_csv
+    write_dataclass_csv(results, path, CSV_COLUMNS)
 
 
 # ---------------------------------------------------------------------------

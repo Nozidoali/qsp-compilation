@@ -4,7 +4,7 @@ Usage
 -----
     python -m experiments.run_all benchmarks/
     python -m experiments.run_all benchmarks/ -o results/ -b 4,8
-    python -m experiments.run_all benchmarks/ -a rotation_sparse,qrom -v
+    python -m experiments.run_all benchmarks/ -a sparse,qrom -v
 """
 from __future__ import annotations
 

@@ -21,8 +21,6 @@ Examples
 from __future__ import annotations
 
 import argparse
-import csv
-import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,14 +101,23 @@ class TFriendlyRecord:
     best_t: int = 0
 
 
-CSV_HEADER = [
+CSV_COLUMNS = [
     "n_bits", "sample_id", "precision_bits", "cardinality",
-    "dense_t", "dense_ry", "dense_cnot", "dense_infidelity",
-    "sparse_t", "sparse_ry", "sparse_infidelity",
+    "dense_t",
+    ("dense_ry", "dense_ry_count"),
+    ("dense_cnot", "dense_cnot_count"),
+    "dense_infidelity",
+    "sparse_t",
+    ("sparse_ry", "sparse_ry_count"),
+    "sparse_infidelity",
     "qrom_t", "qrom_infidelity",
     "selectswap_t", "selectswap_infidelity",
     "best_method", "best_t",
 ]
+
+_EXP_FIELDS = ("dense_infidelity", "sparse_infidelity",
+               "qrom_infidelity", "selectswap_infidelity")
+_FORMATTERS = {name: lambda v: f"{v:.6e}" for name in _EXP_FIELDS}
 
 
 def run_experiment(
@@ -223,19 +230,8 @@ def run_experiment(
 
 
 def write_csv(records: List[TFriendlyRecord], path: Path) -> None:
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(CSV_HEADER)
-        for r in records:
-            w.writerow([
-                r.n_bits, r.sample_id, r.precision_bits, r.cardinality,
-                r.dense_t, r.dense_ry_count, r.dense_cnot_count,
-                f"{r.dense_infidelity:.6e}",
-                r.sparse_t, r.sparse_ry_count, f"{r.sparse_infidelity:.6e}",
-                r.qrom_t, f"{r.qrom_infidelity:.6e}",
-                r.selectswap_t, f"{r.selectswap_infidelity:.6e}",
-                r.best_method, r.best_t,
-            ])
+    from experiments.csv_utils import write_dataclass_csv
+    write_dataclass_csv(records, path, CSV_COLUMNS, formatters=_FORMATTERS)
 
 
 def print_comparison_table(records: List[TFriendlyRecord]) -> None:

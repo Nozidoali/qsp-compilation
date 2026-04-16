@@ -3,37 +3,44 @@
 Usage
 -----
     python -m experiments.run state.json -o output_dir/
-    python -m experiments.run state.json -o output_dir/ -b 4,8 -a rotation_sparse
+    python -m experiments.run state.json -o output_dir/ -b 4,8 -a sparse
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 from qiskit.qasm2 import dumps as qasm2_dumps
 
 from experiments.compare_t_cost import (
-    Result,
-    _fill_gate_counts,
-    _gridsynth_t_count,
+    ALL_APPROACHES,
+    ROTATION_APPROACHES,
+    SELECTSWAP,
+    run_approach,
 )
 from qsp.circuit_utils import decompose_to_clifford_t
-from qsp.metrics import (
-    count_cnots,
-    count_ry,
-    estimate_t_count,
-    qrom_marginal_fidelity,
-    rotation_fidelity,
-)
 from qsp.qrom.alias_sampling import synthesize_alias_sampling
-from qsp.rotation.dense import prepare_state_dense
-from qsp.rotation.sparse import prepare_state_sparse
 from qsp.state import load_state
 
-APPROACHES = ["rotation_sparse", "rotation_dense", "qrom", "selectswap"]
+APPROACHES = list(ALL_APPROACHES)
+
+
+def _emit_clifford_t_qasm(approach, qc, state, n_bits, precision_bits):
+    """QASM of the Clifford+T variant. For rotation approaches we lower via
+    pygridsynth; for QROM we re-synthesize with native AND gates instead of CCX.
+    """
+    if qc is None or precision_bits <= 0:
+        return None
+    if approach in ROTATION_APPROACHES:
+        return qasm2_dumps(decompose_to_clifford_t(qc, precision_bits))
+    res_ct = synthesize_alias_sampling(
+        state, n_bits, precision_bits,
+        use_select_swap=(approach == SELECTSWAP),
+        clifford_t=True,
+    )
+    return qasm2_dumps(res_ct.qc)
 
 
 def compile_state(
@@ -56,54 +63,12 @@ def compile_state(
 
     for b in precisions:
         for approach in approaches:
-            r = Result(state_tag=tag, family=family, n=n_bits, m=len(state),
-                       approach=approach, precision_bits=b)
-            qasm_str = None
-            qasm_ct_str = None
-            start = time.monotonic()
-
-            try:
-                if approach.startswith("rotation"):
-                    strategy = approach.split("_", 1)[1]
-                    if strategy == "sparse":
-                        qc = prepare_state_sparse(state, n_bits, timeout)
-                    else:
-                        qc = prepare_state_dense(state, n_bits, timeout)
-                    r.time_ms = (time.monotonic() - start) * 1000.0
-                    r.t_count = estimate_t_count(qc)
-                    r.ry_count = count_ry(qc)
-                    r.cnot_count = count_cnots(qc)
-                    r.qubit_count = qc.num_qubits
-                    r.gate_count = qc.size()
-                    _fill_gate_counts(r, qc)
-                    if n_bits <= 10:
-                        r.fidelity = rotation_fidelity(qc, state, n_bits)
-                    if b > 0 and r.ry_count > 0:
-                        r.gs_t_count = _gridsynth_t_count(qc, b)
-                    qasm_str = qasm2_dumps(qc)
-                    if b > 0:
-                        qc_ct = decompose_to_clifford_t(qc, b)
-                        qasm_ct_str = qasm2_dumps(qc_ct)
-                else:
-                    use_select_swap = approach == "selectswap"
-                    res = synthesize_alias_sampling(state, n_bits, b, use_select_swap)
-                    r.time_ms = res.compile_time_ms
-                    r.t_count = res.t_count
-                    r.cnot_count = res.cnot_count
-                    r.qubit_count = res.qubit_count
-                    r.gate_count = res.qc.size()
-                    _fill_gate_counts(r, res.qc)
-                    if res.qc.num_qubits <= 25:
-                        r.fidelity = qrom_marginal_fidelity(res.qc, state, n_bits)
-                    qasm_str = qasm2_dumps(res.qc)
-                    # Native Clifford+T QROM (AND gates instead of CCX)
-                    res_ct = synthesize_alias_sampling(
-                        state, n_bits, b, use_select_swap, clifford_t=True,
-                    )
-                    qasm_ct_str = qasm2_dumps(res_ct.qc)
-            except Exception:
-                r.success = False
-                r.time_ms = (time.monotonic() - start) * 1000.0
+            r, qc = run_approach(
+                approach, state, n_bits, tag, family,
+                precision_bits=b, timeout=timeout,
+            )
+            qasm_str = qasm2_dumps(qc) if qc is not None else None
+            qasm_ct_str = _emit_clifford_t_qasm(approach, qc, state, n_bits, b)
 
             d = r.to_dict()
             d["qasm"] = qasm_str
