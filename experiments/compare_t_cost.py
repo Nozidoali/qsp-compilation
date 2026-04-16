@@ -24,10 +24,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import numpy as np
-from qiskit.quantum_info import Statevector
-
-from qsp.metrics import clifford_t_counts, count_cnots, count_ry, estimate_t_count
+from qsp.metrics import (
+    clifford_t_counts,
+    count_cnots,
+    count_ry,
+    estimate_t_count,
+    qrom_marginal_fidelity,
+    rotation_fidelity,
+)
 from qsp.qrom.alias_sampling import estimate_alias_sampling_t_count, synthesize_alias_sampling
 from qsp.rotation.dense import prepare_state_dense
 from qsp.rotation.sparse import prepare_state_sparse
@@ -36,7 +40,6 @@ from qsp.state import (
     State,
     dump_benchmarks,
     load_state,
-    to_statevector,
 )
 
 
@@ -91,33 +94,6 @@ def generate_state(family: str, n: int, seed: int) -> tuple[State, int]:
     if family == "dense_uniform":
         return dense_uniform(n)
     return {0: 1.0}, n
-
-
-# ---------------------------------------------------------------------------
-# Fidelity helpers
-# ---------------------------------------------------------------------------
-
-def _fidelity_rotation(qc, target: State, n_bits: int) -> float:
-    try:
-        sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
-        sim = sv.data[: 1 << n_bits]
-        tgt = to_statevector(target, n_bits).astype(complex)
-        return float(np.abs(np.vdot(tgt, sim)) ** 2)
-    except Exception:
-        return 0.0
-
-
-def _fidelity_qrom(qc, target: State, n_bits: int) -> float:
-    try:
-        sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
-        probs = np.zeros(1 << n_bits)
-        for idx, amp in enumerate(sv.data):
-            probs[idx & ((1 << n_bits) - 1)] += abs(amp) ** 2
-        tgt = to_statevector(target, n_bits)
-        tgt_probs = tgt ** 2
-        return float(np.sum(np.sqrt(probs * tgt_probs)) ** 2)
-    except Exception:
-        return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +159,7 @@ def run_rotation(
         r.gate_count = qc.size()
         _fill_gate_counts(r, qc)
         if n_bits <= 10:
-            r.fidelity = _fidelity_rotation(qc, state, n_bits)
+            r.fidelity = rotation_fidelity(qc, state, n_bits)
         if precision_bits > 0 and r.ry_count > 0:
             r.gs_t_count = _gridsynth_t_count(qc, precision_bits)
     except Exception as e:
@@ -211,7 +187,7 @@ def run_qrom(
         r.gate_count = res.qc.size()
         _fill_gate_counts(r, res.qc)
         if res.qc.num_qubits <= 25:
-            r.fidelity = _fidelity_qrom(res.qc, state, n_bits)
+            r.fidelity = qrom_marginal_fidelity(res.qc, state, n_bits)
     except Exception:
         r.success = False
         r.time_ms = (time.monotonic() - start) * 1000.0

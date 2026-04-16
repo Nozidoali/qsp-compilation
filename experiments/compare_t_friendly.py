@@ -30,43 +30,18 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from qiskit.quantum_info import Statevector
-
 from qsp.circuit_utils import decompose_to_clifford_t
-from qsp.metrics import count_ry
+from qsp.metrics import count_ry, estimate_t_count, rotation_fidelity
 from qsp.qrom.alias_sampling import (
     build_alias_table, estimate_alias_sampling_t_count,
 )
 from qsp.rotation.sparse import prepare_state_sparse
-from qsp.state import State, normalize, to_statevector
+from qsp.state import State
 from qsp.t_friendly import (
     collect_all_angles,
     enumerate_exact_angles,
     generate_t_friendly_state as build_t_friendly_circuit,
 )
-
-
-def _count_t_gates(qc) -> int:
-    """Count T gates in a Clifford+T circuit."""
-    total = 0
-    for instr in qc.data:
-        name = instr.operation.name
-        if name in ("t", "tdg"):
-            total += 1
-        elif name == "ccx":
-            total += 4
-    return total
-
-
-def _sim_fidelity(qc, state: State, n_bits: int) -> float:
-    """Compute fidelity of a circuit against a target state."""
-    try:
-        sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
-        sim = sv.data[: 1 << n_bits]
-        tgt = to_statevector(state, n_bits).astype(complex)
-        return float(np.abs(np.vdot(tgt, sim)) ** 2)
-    except Exception:
-        return 0.0
 
 
 def _qrom_analytical_fidelity(state: State, n_bits: int, precision_bits: int) -> float:
@@ -96,8 +71,8 @@ def synthesize_sparse_clifford_t(
         qc = prepare_state_sparse(state, n_bits, timeout=5.0)
         n_ry = count_ry(qc)
         qc_ct = decompose_to_clifford_t(qc, precision_bits)
-        t = _count_t_gates(qc_ct)
-        fid = _sim_fidelity(qc_ct, state, n_bits) if n_bits <= 10 else -1.0
+        t = estimate_t_count(qc_ct)
+        fid = rotation_fidelity(qc_ct, state, n_bits) if n_bits <= 10 else -1.0
         return t, n_ry, fid
     except Exception:
         return -1, 0, 0.0
@@ -194,10 +169,10 @@ def run_experiment(
                 if sparse_qc is not None:
                     try:
                         qc_ct = decompose_to_clifford_t(sparse_qc, prec)
-                        rec.sparse_t = _count_t_gates(qc_ct)
+                        rec.sparse_t = estimate_t_count(qc_ct)
                         rec.sparse_ry_count = count_ry(sparse_qc)
                         if n_bits <= 10:
-                            fid = _sim_fidelity(qc_ct, state, n_bits)
+                            fid = rotation_fidelity(qc_ct, state, n_bits)
                             rec.sparse_infidelity = max(1 - fid, 0.0)
                     except Exception as e:
                         if verbose:

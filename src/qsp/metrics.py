@@ -61,3 +61,31 @@ def verify_state_preparation(
     sim_vec = np.real(sv.data[: 1 << n_bits])
     fidelity = float(np.abs(np.dot(sim_vec, target_vec)) ** 2)
     return fidelity
+
+
+def rotation_fidelity(qc: QuantumCircuit, target: State, n_bits: int) -> float:
+    """|<target|sim>|^2 over the first 2^n_bits amplitudes of the evolved state."""
+    try:
+        sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
+        sim = sv.data[: 1 << n_bits]
+        tgt = to_statevector(target, n_bits).astype(complex)
+        return float(np.abs(np.vdot(tgt, sim)) ** 2)
+    except Exception:
+        return 0.0
+
+
+def qrom_marginal_fidelity(qc: QuantumCircuit, target: State, n_bits: int) -> float:
+    """Classical (Bhattacharyya) fidelity between the marginal probabilities of
+    the first n_bits of the evolved state and the target amplitudes squared.
+    """
+    try:
+        sv = Statevector.from_label("0" * qc.num_qubits).evolve(qc)
+        probs = np.zeros(1 << n_bits)
+        mask = (1 << n_bits) - 1
+        for idx, amp in enumerate(sv.data):
+            probs[idx & mask] += abs(amp) ** 2
+        tgt = to_statevector(target, n_bits)
+        tgt_probs = tgt ** 2
+        return float(np.sum(np.sqrt(probs * tgt_probs)) ** 2)
+    except Exception:
+        return 0.0

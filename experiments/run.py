@@ -18,12 +18,16 @@ from qiskit.qasm2 import dumps as qasm2_dumps
 from experiments.compare_t_cost import (
     Result,
     _fill_gate_counts,
-    _fidelity_qrom,
-    _fidelity_rotation,
     _gridsynth_t_count,
 )
 from qsp.circuit_utils import decompose_to_clifford_t
-from qsp.metrics import count_cnots, count_ry, estimate_t_count
+from qsp.metrics import (
+    count_cnots,
+    count_ry,
+    estimate_t_count,
+    qrom_marginal_fidelity,
+    rotation_fidelity,
+)
 from qsp.qrom.alias_sampling import synthesize_alias_sampling
 from qsp.rotation.dense import prepare_state_dense
 from qsp.rotation.sparse import prepare_state_sparse
@@ -73,7 +77,7 @@ def compile_state(
                     r.gate_count = qc.size()
                     _fill_gate_counts(r, qc)
                     if n_bits <= 10:
-                        r.fidelity = _fidelity_rotation(qc, state, n_bits)
+                        r.fidelity = rotation_fidelity(qc, state, n_bits)
                     if b > 0 and r.ry_count > 0:
                         r.gs_t_count = _gridsynth_t_count(qc, b)
                     qasm_str = qasm2_dumps(qc)
@@ -90,7 +94,7 @@ def compile_state(
                     r.gate_count = res.qc.size()
                     _fill_gate_counts(r, res.qc)
                     if res.qc.num_qubits <= 25:
-                        r.fidelity = _fidelity_qrom(res.qc, state, n_bits)
+                        r.fidelity = qrom_marginal_fidelity(res.qc, state, n_bits)
                     qasm_str = qasm2_dumps(res.qc)
                     # Native Clifford+T QROM (AND gates instead of CCX)
                     res_ct = synthesize_alias_sampling(
