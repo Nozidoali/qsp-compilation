@@ -179,15 +179,69 @@ def _emit_clifford_rz(qc: QuantumCircuit, theta: float, qubit: int) -> bool:
     return True
 
 
+def _gridsynth_key(theta: float, precision_bits: int) -> Tuple[int, int]:
+    """Cache key bucketing angles at epsilon/10 resolution."""
+    epsilon = 2.0 ** (-precision_bits)
+    return (round(theta / (epsilon / 10.0)), precision_bits)
+
+
 def _gridsynth_decompose(theta: float, precision_bits: int) -> str:
-    """Return gridsynth gate string for Rz(theta), with caching."""
-    key = (round(theta * 1e10), precision_bits)
+    """Return gridsynth gate string for Rz(theta), with caching.
+
+    The cache key quantizes theta at epsilon/10, where epsilon = 2**-precision_bits
+    is the gridsynth tolerance. Angles that round to the same bucket differ by
+    at most epsilon/10, so reusing the cached decomposition adds at most
+    epsilon/10 on top of gridsynth's native epsilon error -> total <= 1.1*epsilon
+    per rotation (bound; in practice errors cancel across many rotations).
+    """
+    key = _gridsynth_key(theta, precision_bits)
     if key not in _gridsynth_cache:
+        epsilon = 2.0 ** (-precision_bits)
         warnings.filterwarnings("ignore")
         from pygridsynth import gridsynth_gates
-        epsilon = 2.0 ** (-precision_bits)
         _gridsynth_cache[key] = gridsynth_gates(theta, epsilon)
     return _gridsynth_cache[key]
+
+
+def _pygridsynth_call(args):
+    """Top-level worker function so ProcessPoolExecutor can pickle it."""
+    theta, epsilon = args
+    import warnings as _w
+    _w.filterwarnings("ignore")
+    from pygridsynth import gridsynth_gates
+    return gridsynth_gates(theta, epsilon)
+
+
+def prewarm_gridsynth_cache(
+    thetas,
+    precision_bits: int,
+    max_workers: int | None = None,
+) -> None:
+    """Parallel-populate the gridsynth cache for the given angles.
+
+    Dedupes via ``_gridsynth_key`` first so each unique bucket is synthesized
+    only once. Uses ``ProcessPoolExecutor`` because pygridsynth is CPU-bound
+    Python (GIL-bound) and only process-level parallelism scales.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    epsilon = 2.0 ** (-precision_bits)
+    # Unique missing keys -> representative theta
+    missing: Dict[Tuple[int, int], float] = {}
+    for theta in thetas:
+        key = _gridsynth_key(theta, precision_bits)
+        if key in _gridsynth_cache or key in missing:
+            continue
+        missing[key] = theta
+    if not missing:
+        return
+
+    items = list(missing.items())
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futs = {pool.submit(_pygridsynth_call, (theta, epsilon)): key
+                for key, theta in items}
+        for fut in as_completed(futs):
+            _gridsynth_cache[futs[fut]] = fut.result()
 
 
 def _emit_gridsynth_gates(qc: QuantumCircuit, gate_str: str, qubit: int) -> None:
@@ -221,9 +275,57 @@ def _flatten(qc: QuantumCircuit, max_rounds: int = 10) -> QuantumCircuit:
     return flat
 
 
+def _collect_gridsynth_angles(flat: QuantumCircuit):
+    """Yield every rotation angle that ``decompose_to_clifford_t`` would send
+    through pygridsynth (skipping exactly-representable Clifford-rz / zero /
+    pi angles, matching the emit-loop predicates)."""
+    for instr in flat.data:
+        name = instr.operation.name
+        if name == "ry":
+            theta = float(instr.operation.params[0])
+            if abs(theta) < 1e-12:
+                continue
+            if abs(abs(theta) - math.pi) < 1e-12:
+                continue
+            yield theta
+        elif name == "cry":
+            theta = float(instr.operation.params[0])
+            if abs(theta) < 1e-12:
+                continue
+            half = theta / 2.0
+            yield half
+            yield -half
+        elif name == "rz":
+            theta = float(instr.operation.params[0])
+            if abs(theta) < 1e-12:
+                continue
+            # skip angles _emit_clifford_rz handles exactly
+            t = theta % (2 * math.pi)
+            k = round(t / (math.pi / 4))
+            if abs(t - k * math.pi / 4) <= 1e-9:
+                continue
+            yield theta
+        elif name == "u":
+            theta = float(instr.operation.params[0])
+            phi = float(instr.operation.params[1])
+            lam = float(instr.operation.params[2])
+            for a in (lam, theta, phi):
+                if abs(a) < 1e-12:
+                    continue
+                if a is theta and abs(abs(a) - math.pi) < 1e-12:
+                    continue  # becomes X, no gridsynth
+                t = a % (2 * math.pi)
+                k = round(t / (math.pi / 4))
+                if abs(t - k * math.pi / 4) <= 1e-9:
+                    continue  # Clifford rz short-circuit
+                yield a
+
+
 def decompose_to_clifford_t(
     qc: QuantumCircuit,
     precision_bits: int,
+    parallel: bool = True,
+    max_workers: int | None = None,
 ) -> QuantumCircuit:
     """Decompose rotation gates (RY, CRY, RZ) to Clifford+T via gridsynth.
 
@@ -232,8 +334,18 @@ def decompose_to_clifford_t(
     Other gates (X, CX, H, S, T, etc.) are copied as-is.
     For CCX decomposition, use the native Clifford+T synthesis in
     :mod:`qsp.qrom.synthesis` instead.
+
+    When ``parallel=True`` (default) the cache is first populated in a process
+    pool over unique angle buckets; the emit loop then runs serially against
+    the warm cache.
     """
     flat = _flatten(qc)
+    if parallel:
+        prewarm_gridsynth_cache(
+            _collect_gridsynth_angles(flat),
+            precision_bits,
+            max_workers=max_workers,
+        )
     out = QuantumCircuit(flat.num_qubits)
 
     for instr in flat.data:
