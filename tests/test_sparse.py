@@ -42,3 +42,18 @@ class TestSparse:
         qc = prepare_state_sparse(state, n, timeout=10.0)
         fid = _fidelity(qc, state, n)
         assert fid > 1 - 1e-6, f"fidelity={fid}"
+
+    def test_large_cardinality_above_1000(self):
+        """Regression: a state with cardinality > 1000 must not silently return
+        a wrong circuit.  Previously max_iter=1000 hard-capped the reduction,
+        so fidelity collapsed from 1.0 (card=990) to ~1e-4 (card=2000)."""
+        import random
+        from qsp.state import normalize
+        random.seed(0)
+        n = 12
+        card = 1500
+        idxs = random.sample(range(1 << n), card)
+        state = normalize({i: random.gauss(0, 1) for i in idxs})
+        qc = prepare_state_sparse(state, n, timeout=120.0)
+        fid = _fidelity(qc, state, n)
+        assert fid > 1 - 1e-6, f"fidelity={fid} (expected ~1.0)"

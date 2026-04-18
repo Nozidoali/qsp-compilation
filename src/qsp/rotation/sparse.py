@@ -96,16 +96,21 @@ def prepare_state_sparse(
     curr = dict(state)
     all_gates: List[dict] = []
 
-    max_iter = 1000
+    # Each iteration reduces cardinality by at most 1, so |state| iterations
+    # is a tight upper bound. Small slack covers non-reducing iterations
+    # before the seen-hash / no_reduction guards fire.
+    max_iter = len(state) + 16
     seen: set = set()
     no_reduction = 0
     prev_card = cardinality(curr)
     start = time.monotonic()
+    timed_out = False
 
     for _ in range(max_iter):
         if cardinality(curr) <= 1:
             break
         if time.monotonic() - start >= timeout:
+            timed_out = True
             break
 
         h = state_hash(curr, n_bits)
@@ -124,6 +129,15 @@ def prepare_state_sparse(
             curr = new_state
             no_reduction = 0
         prev_card = cardinality(curr)
+
+    if cardinality(curr) > 1:
+        elapsed = time.monotonic() - start
+        reason = "timed out" if timed_out else "stalled (cycle/non-reducing)"
+        raise RuntimeError(
+            f"prepare_state_sparse {reason} with {cardinality(curr)} residual "
+            f"amplitudes (start card={len(state)}, n_bits={n_bits}, "
+            f"elapsed={elapsed:.1f}s, timeout={timeout}s)"
+        )
 
     if curr:
         index = next(iter(curr.keys()))
