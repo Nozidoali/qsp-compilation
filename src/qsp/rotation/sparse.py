@@ -11,79 +11,90 @@ import math
 import time
 from typing import Dict, List, Set, Tuple
 
+import numpy as np
 from qiskit.circuit import QuantumCircuit
 
 from qsp.state import EPS, State, cardinality, state_hash
 from qsp.rotation.common import (
     apply_controlled_cx,
+    apply_controlled_cx_arr,
+    apply_controlled_cx_np,
     apply_mcry,
+    apply_mcry_arr,
+    apply_mcry_np,
     apply_x,
     maximize_difference_once,
+    maximize_difference_once_np,
 )
 
 
 def cardinality_reduction_by_one(
     state: State, n_bits: int
 ) -> Tuple[State, List[dict]]:
-    new_state = dict(state)
-    indices: Set[int] = set(state.keys())
+    # Convert to arrays once; stay in array land until the final return.
+    idx_arr = np.fromiter(state.keys(), dtype=np.int64, count=len(state))
+    amp_arr = np.fromiter(state.values(), dtype=np.float64, count=len(state))
 
+    # --- Pivot selection: reduce index set to a single element ---
+    indices_np = idx_arr.copy()
     diff_values: Dict[int, bool] = {}
     diff_qubit = 0
-    while len(indices) > 1:
-        diff_qubit, _ = maximize_difference_once(n_bits, indices, diff_values)
-
-    index0 = next(iter(indices))
+    while len(indices_np) > 1:
+        diff_qubit, indices_np = maximize_difference_once_np(
+            n_bits, indices_np, diff_values,
+        )
+    index0 = int(indices_np[0])
     diff_values.pop(diff_qubit, None)
 
-    candidates: Set[int] = set()
-    for idx in state:
-        if idx in indices:
-            continue
-        valid = all(
-            bool((idx >> q) & 1) == v for q, v in diff_values.items()
+    # --- Candidate filter (vectorized on idx_arr) ---
+    mask = idx_arr != index0
+    for q, v in diff_values.items():
+        bit_q = ((idx_arr >> q) & 1).astype(bool)
+        mask &= bit_q if v else ~bit_q
+    candidates_np = idx_arr[mask]
+    while len(candidates_np) > 1:
+        _, candidates_np = maximize_difference_once_np(
+            n_bits, candidates_np, diff_values,
         )
-        if valid:
-            candidates.add(idx)
-    while len(candidates) > 1:
-        maximize_difference_once(n_bits, candidates, diff_values)
+    index1 = int(candidates_np[0])
 
-    index1 = next(iter(candidates))
     gates: List[dict] = []
-
     diff_val = bool((index0 >> diff_qubit) & 1)
 
+    # --- CX alignment: flip target bits of index1 to match index0 ---
     for qubit in range(n_bits):
         if ((index0 >> qubit) & 1) == ((index1 >> qubit) & 1):
             continue
         if qubit == diff_qubit:
             continue
-        gate = {"type": "cx", "control": diff_qubit, "ctrl_val": diff_val, "target": qubit}
-        gates.append(gate)
-        new_state = apply_controlled_cx(new_state, diff_qubit, diff_val, qubit)
+        gates.append({"type": "cx", "control": diff_qubit,
+                      "ctrl_val": diff_val, "target": qubit})
+        idx_arr, amp_arr = apply_controlled_cx_arr(
+            idx_arr, amp_arr, diff_qubit, diff_val, qubit,
+        )
 
-    ctrls = []
-    phases = []
-    for q, v in diff_values.items():
-        ctrls.append(q)
-        phases.append(v)
+    ctrls = list(diff_values.keys())
+    phases = [diff_values[q] for q in ctrls]
 
     idx0 = index1 & ~(1 << diff_qubit)
     idx1 = index1 | (1 << diff_qubit)
-    assert idx0 in new_state, f"idx0={idx0} not in state"
-    assert idx1 in new_state, f"idx1={idx1} not in state"
-
-    w0 = new_state[idx0]
-    w1 = new_state[idx1]
+    pos0 = np.where(idx_arr == idx0)[0]
+    pos1 = np.where(idx_arr == idx1)[0]
+    assert len(pos0) == 1 and len(pos1) == 1, \
+        f"expected idx0={idx0} and idx1={idx1} in state after CX alignment"
+    w0 = float(amp_arr[pos0[0]])
+    w1 = float(amp_arr[pos1[0]])
     theta = 2.0 * math.atan2(w0, w1)
     if (index1 >> diff_qubit) & 1:
         theta = -math.pi + theta
 
-    gate = {"type": "mcry", "ctrls": ctrls, "phases": phases,
-            "theta": theta, "target": diff_qubit}
-    gates.append(gate)
-    new_state = apply_mcry(new_state, ctrls, phases, theta, diff_qubit)
+    gates.append({"type": "mcry", "ctrls": ctrls, "phases": phases,
+                  "theta": theta, "target": diff_qubit})
+    idx_arr, amp_arr = apply_mcry_arr(
+        idx_arr, amp_arr, ctrls, phases, theta, diff_qubit,
+    )
 
+    new_state = dict(zip(idx_arr.tolist(), amp_arr.tolist()))
     return new_state, gates
 
 
@@ -91,8 +102,17 @@ def prepare_state_sparse(
     state: State,
     n_bits: int,
     timeout: float = 120.0,
+    use_gidney: bool = False,
 ) -> QuantumCircuit:
-    qc = QuantumCircuit(n_bits)
+    """Cardinality-reduction sparse state preparation.
+
+    By default multi-controlled Ry gates are emitted via Qiskit's
+    ``RYGate.control(k)`` (keeps the circuit width at ``n_bits`` qubits but
+    decomposes exponentially in k). Pass ``use_gidney=True`` to expand MCRY
+    via a Gidney-AND V-chain with up to ``n_bits - 2`` clean ancillas,
+    matching the Gleinig-Hoefler O(n) CX per reduction bound at the cost of
+    ~k wider circuit width.
+    """
     curr = dict(state)
     all_gates: List[dict] = []
 
@@ -146,11 +166,28 @@ def prepare_state_sparse(
                 all_gates.append({"type": "x", "target": qubit})
 
     all_gates.reverse()
-    _emit_gates(qc, all_gates)
+
+    if use_gidney:
+        max_ctrls = max(
+            (len(g["ctrls"]) for g in all_gates if g["type"] == "mcry"),
+            default=0,
+        )
+        n_anc = max(0, max_ctrls - 1)
+    else:
+        n_anc = 0
+    qc = QuantumCircuit(n_bits + n_anc)
+    ancillas = list(range(n_bits, n_bits + n_anc))
+    _emit_gates(qc, all_gates, ancillas=ancillas, use_gidney=use_gidney)
     return qc
 
 
-def _emit_gates(qc: QuantumCircuit, gates: List[dict]) -> None:
+def _emit_gates(
+    qc: QuantumCircuit,
+    gates: List[dict],
+    ancillas: List[int] | None = None,
+    use_gidney: bool = False,
+) -> None:
+    ancillas = ancillas or []
     for g in gates:
         if g["type"] == "x":
             qc.x(g["target"])
@@ -174,7 +211,11 @@ def _emit_gates(qc: QuantumCircuit, gates: List[dict]) -> None:
                 for i, p in enumerate(phases):
                     if not p:
                         qc.x(ctrls[i])
-                if len(ctrls) == 1:
+                if use_gidney:
+                    from qsp.circuit_utils import mcry_gidney
+                    mcry_gidney(qc, theta, ctrls, target,
+                                ancillas[: max(0, len(ctrls) - 1)])
+                elif len(ctrls) == 1:
                     qc.cry(theta, ctrls[0], target)
                 else:
                     from qiskit.circuit.library import RYGate

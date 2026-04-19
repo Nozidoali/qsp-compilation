@@ -50,6 +50,47 @@ def ccx_via_and(
     and_uncompute(qc, c0, c1, anc)
 
 
+def mcry_gidney(
+    qc: QuantumCircuit,
+    theta: float,
+    ctrls: List[int],
+    target: int,
+    ancillas: List[int],
+) -> None:
+    """Multi-controlled Ry decomposed via a Gidney-AND V-chain.
+
+    Emits ``O(k)`` CX per gate (k = number of controls), matching the
+    Gleinig-Hoefler asymptotic bound. Uses ``k - 1`` clean ancillas
+    (``|0>`` in / ``|0>`` out) from the given ``ancillas`` pool.
+
+    For k == 0 degenerates to ``ry``; for k == 1 degenerates to ``cry``.
+    """
+    k = len(ctrls)
+    if k == 0:
+        qc.ry(theta, target)
+        return
+    if k == 1:
+        qc.cry(theta, ctrls[0], target)
+        return
+    if len(ancillas) < k - 1:
+        raise ValueError(
+            f"mcry_gidney: need {k - 1} ancillas for {k} controls, got {len(ancillas)}"
+        )
+
+    # Compute V-chain: ancillas[i-1] = AND(ctrls[0..=i])
+    and_compute(qc, ctrls[0], ctrls[1], ancillas[0])
+    for i in range(2, k):
+        and_compute(qc, ancillas[i - 2], ctrls[i], ancillas[i - 1])
+
+    # Single controlled Ry on the top of the chain
+    qc.cry(theta, ancillas[k - 2], target)
+
+    # Uncompute V-chain in reverse
+    for i in range(k - 1, 1, -1):
+        and_uncompute(qc, ancillas[i - 2], ctrls[i], ancillas[i - 1])
+    and_uncompute(qc, ctrls[0], ctrls[1], ancillas[0])
+
+
 # ---------------------------------------------------------------------------
 # Clifford+T versions of circuit primitives
 # ---------------------------------------------------------------------------
