@@ -48,6 +48,11 @@ class AliasSamplingResult:
     compare_t: int = 0
     cswap_t: int = 0
     compile_time_ms: float = 0.0
+    # SELECT-SWAP block sizes (lambda_used in underlying QROMs). Both 0 for
+    # the basic SELECT (non-swap) path, since that doesn't have a block-size
+    # parameter.
+    keep_lambda: int = 0
+    alias_lambda: int = 0
 
 
 def _amplitudes_to_probabilities(state: State, n_bits: int) -> List[float]:
@@ -191,6 +196,8 @@ def synthesize_alias_sampling(
             compare_t=compare_t,
             cswap_t=cswap_t,
             compile_time_ms=elapsed,
+            keep_lambda=keep_res.lambda_used,
+            alias_lambda=alias_res.lambda_used,
         )
     else:
         t_per_ccx = 4 if clean_ancilla else 7
@@ -205,6 +212,8 @@ def synthesize_alias_sampling(
             compare_t=compare_ccx * t_per_ccx,
             cswap_t=cswap_ccx * t_per_ccx,
             compile_time_ms=elapsed,
+            keep_lambda=keep_res.lambda_used,
+            alias_lambda=alias_res.lambda_used,
         )
     return result
 

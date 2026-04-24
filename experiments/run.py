@@ -50,12 +50,17 @@ def compile_state(
     approaches: list[str],
     timeout: float,
     verbose: bool,
+    on_result=None,
 ) -> tuple[list[dict], list[Result]]:
     """Compile one state with given approaches/precisions.
 
     Returns ``(outputs, results)`` where ``outputs`` is the legacy list of
     dicts (with ``qasm`` / ``qasm_ct`` strings) used by write_outputs, and
     ``results`` is the raw list of Result dataclasses used by write_csv.
+
+    If ``on_result`` is given, it is called as ``on_result(r)`` after every
+    (approach, precision) combination completes — useful for streaming a
+    CSV row to disk before the full sweep finishes (crash-safe progress).
     """
     state, n_bits = load_state(state_path)
     tag = state_path.stem
@@ -79,6 +84,8 @@ def compile_state(
             d["qasm"] = qasm_str
             d["qasm_ct"] = qasm_ct_str
             outputs.append(d)
+            if on_result is not None:
+                on_result(r)
 
             if verbose:
                 status = "" if r.success else " [FAILED]"

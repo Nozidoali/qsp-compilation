@@ -9,11 +9,13 @@ Usage
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
-from experiments.compare_t_cost import write_csv
+from experiments.compare_t_cost import CSV_COLUMNS, write_csv
 from experiments.run import APPROACHES, compile_state, write_outputs
 
 
@@ -53,28 +55,40 @@ def main() -> None:
         if args.approach else APPROACHES
     )
 
-    all_stats = []
-    all_results = []
-    for i, state_path in enumerate(state_files, 1):
-        tag = state_path.stem
-        if args.verbose:
-            print(f"[{i}/{len(state_files)}] {tag}", file=sys.stderr)
-
-        outputs, results = compile_state(
-            state_path, precisions, approaches, args.timeout, args.verbose,
-        )
-        write_outputs(outputs, args.output_dir / tag, tag)
-        all_stats.extend(outputs)
-        all_results.extend(results)
-
-    # write combined summary JSON + CSV
+    # Open the combined CSV for streaming writes: one row per (state, approach, b)
+    # is appended + flushed as soon as the point is computed, so partial data
+    # survives a crash / Ctrl-C mid-sweep.
     summary_path = args.summary or (args.output_dir / "summary.json")
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(all_stats, indent=2))
-
     csv_path = args.csv or summary_path.with_suffix(".csv")
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    write_csv(all_results, csv_path)
+
+    all_stats = []
+    all_results = []
+    with open(csv_path, "w", newline="") as csv_file:
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(CSV_COLUMNS)
+
+        def _stream_row(r):
+            d = asdict(r)
+            csv_writer.writerow([d.get(col, "") for col in CSV_COLUMNS])
+            csv_file.flush()
+
+        for i, state_path in enumerate(state_files, 1):
+            tag = state_path.stem
+            if args.verbose:
+                print(f"[{i}/{len(state_files)}] {tag}", file=sys.stderr)
+
+            outputs, results = compile_state(
+                state_path, precisions, approaches, args.timeout, args.verbose,
+                on_result=_stream_row,
+            )
+            write_outputs(outputs, args.output_dir / tag, tag)
+            all_stats.extend(outputs)
+            all_results.extend(results)
+
+    # summary.json written at end (full sweep). Per-point progress is already in CSV.
+    summary_path.write_text(json.dumps(all_stats, indent=2))
 
     print(f"Processed {len(state_files)} states, {len(all_stats)} results")
     print(f"Per-state outputs: {args.output_dir}/<state_tag>/")

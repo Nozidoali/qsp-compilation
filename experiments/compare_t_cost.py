@@ -83,6 +83,9 @@ class Result:
     fidelity: float = 0.0
     time_ms: float = 0.0
     success: bool = True
+    # --- SELECT-SWAP block sizes (0 for non-select-swap approaches) ---
+    keep_lambda: int = 0
+    alias_lambda: int = 0
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -198,6 +201,8 @@ def _run_qrom(state: State, n_bits: int, r: Result, precision_bits: int):
         r.qubit_count = res.qubit_count
         r.gate_count = res.qc.size()
         _fill_gate_counts(r, res.qc)
+        r.keep_lambda = res.keep_lambda
+        r.alias_lambda = res.alias_lambda
         # Analytical Bhattacharyya over the alias table — no simulator needed,
         # works at any qubit count / n_entries.
         r.fidelity = qrom_alias_analytical_fidelity(state, n_bits, precision_bits)
@@ -299,6 +304,7 @@ CSV_COLUMNS = [
     "t_count", "gs_t_count", "ry_count", "h_count", "s_count",
     "x_count", "z_count", "cnot_count", "ccx_count", "rz_count",
     "qubit_count", "gate_count", "time_ms", "fidelity", "success",
+    "keep_lambda", "alias_lambda",
 ]
 
 
