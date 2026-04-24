@@ -164,17 +164,28 @@ def aer_rotation_fidelity(qc: QuantumCircuit, target: State, n_bits: int) -> flo
     in memory (qc.num_qubits <= ~28). Uses the first 2^n_bits amplitudes of
     the final state vector.
 
-    Note: we feed Aer the circuit directly without a Qiskit ``transpile`` pass.
-    On large circuits (e.g. ~400k gates), the default ``transpile`` is itself
-    many-minutes slow while Aer ingests basis gates natively in ~seconds.
+    Note: circuits with multi-controlled rotation gates (``cry``, ``ccry``,
+    ``c3ry``...) need a light basis-gate pass before Aer can ingest them,
+    so we do ``transpile(..., optimization_level=0)`` — this is a structural
+    expansion, not the heavy Qiskit optimization pipeline, and stays fast
+    (seconds) even on large circuits.
     """
+    from qiskit import transpile
     from qiskit_aer import AerSimulator
 
-    m = qc.copy()
-    m.save_statevector(label="sv")
+    # Decompose multi-controlled rotations (cry/ccry/c_k_ry...) into basis
+    # gates that Aer natively understands. optimization_level=0 keeps this
+    # a structural expansion, not the slow Qiskit optimization pipeline.
+    tqc = transpile(
+        qc,
+        basis_gates=["cx", "u", "h", "s", "sdg", "t", "tdg", "x", "z",
+                     "ry", "rz", "rx", "id"],
+        optimization_level=0,
+    )
+    tqc.save_statevector(label="sv")
 
     sim = AerSimulator(method="statevector")
-    result = sim.run(m, shots=1).result()
+    result = sim.run(tqc, shots=1).result()
     sv = np.asarray(result.data(0)["sv"], dtype=complex)
     tgt = to_statevector(target, n_bits).astype(complex)
     return float(np.abs(np.vdot(tgt, sv[: 1 << n_bits])) ** 2)

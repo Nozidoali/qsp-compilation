@@ -17,6 +17,7 @@ from qiskit.qasm2 import dumps as qasm2_dumps
 from experiments.compare_t_cost import (
     ALL_APPROACHES,
     ROTATION_APPROACHES,
+    Result,
     SELECTSWAP,
     run_approach,
 )
@@ -49,17 +50,20 @@ def compile_state(
     approaches: list[str],
     timeout: float,
     verbose: bool,
-) -> list[dict]:
+) -> tuple[list[dict], list[Result]]:
     """Compile one state with given approaches/precisions.
 
-    Returns list of result dicts, each with an extra ``qasm`` key.
+    Returns ``(outputs, results)`` where ``outputs`` is the legacy list of
+    dicts (with ``qasm`` / ``qasm_ct`` strings) used by write_outputs, and
+    ``results`` is the raw list of Result dataclasses used by write_csv.
     """
     state, n_bits = load_state(state_path)
     tag = state_path.stem
     parts = tag.rsplit("_n", 1)
     family = parts[0] if len(parts) > 1 else tag
 
-    outputs = []
+    outputs: list[dict] = []
+    results: list[Result] = []
 
     for b in precisions:
         for approach in approaches:
@@ -67,6 +71,7 @@ def compile_state(
                 approach, state, n_bits, tag, family,
                 precision_bits=b, timeout=timeout,
             )
+            results.append(r)
             qasm_str = qasm2_dumps(qc) if qc is not None else None
             qasm_ct_str = _emit_clifford_t_qasm(approach, qc, state, n_bits, b)
 
@@ -85,7 +90,7 @@ def compile_state(
                     file=sys.stderr,
                 )
 
-    return outputs
+    return outputs, results
 
 
 def write_outputs(outputs: list[dict], out_dir: Path, tag: str) -> None:
@@ -149,7 +154,7 @@ def main() -> None:
     if args.verbose:
         print(f"Compiling {tag} ...", file=sys.stderr)
 
-    outputs = compile_state(args.state, precisions, approaches, args.timeout, args.verbose)
+    outputs, _ = compile_state(args.state, precisions, approaches, args.timeout, args.verbose)
     write_outputs(outputs, args.output_dir, tag)
 
     print(f"Wrote {len(outputs)} results to {args.output_dir}/")

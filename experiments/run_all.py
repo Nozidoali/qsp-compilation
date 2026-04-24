@@ -13,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 
+from experiments.compare_t_cost import write_csv
 from experiments.run import APPROACHES, compile_state, write_outputs
 
 
@@ -33,6 +34,8 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--summary", type=Path, default=None,
                         help="Write combined summary JSON to this path")
+    parser.add_argument("--csv", type=Path, default=None,
+                        help="Also write a combined CSV (default: alongside summary JSON).")
     args = parser.parse_args()
 
     if not args.input_dir.is_dir():
@@ -51,25 +54,32 @@ def main() -> None:
     )
 
     all_stats = []
+    all_results = []
     for i, state_path in enumerate(state_files, 1):
         tag = state_path.stem
         if args.verbose:
             print(f"[{i}/{len(state_files)}] {tag}", file=sys.stderr)
 
-        outputs = compile_state(
+        outputs, results = compile_state(
             state_path, precisions, approaches, args.timeout, args.verbose,
         )
         write_outputs(outputs, args.output_dir / tag, tag)
         all_stats.extend(outputs)
+        all_results.extend(results)
 
-    # write combined summary
+    # write combined summary JSON + CSV
     summary_path = args.summary or (args.output_dir / "summary.json")
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(all_stats, indent=2))
 
+    csv_path = args.csv or summary_path.with_suffix(".csv")
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    write_csv(all_results, csv_path)
+
     print(f"Processed {len(state_files)} states, {len(all_stats)} results")
     print(f"Per-state outputs: {args.output_dir}/<state_tag>/")
     print(f"Summary: {summary_path}")
+    print(f"CSV:     {csv_path}")
 
 
 if __name__ == "__main__":

@@ -25,10 +25,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from qsp.metrics import (
+    aer_rotation_fidelity,
     clifford_t_counts,
     count_cnots,
     count_ry,
     estimate_t_count,
+    qrom_alias_analytical_fidelity,
     qrom_marginal_fidelity,
     rotation_fidelity,
 )
@@ -150,21 +152,31 @@ def _fill_gate_counts(r: Result, qc) -> None:
 
 
 def _run_rotation(state: State, n_bits: int, r: Result, timeout: float, precision_bits: int):
+    from qsp.circuit_utils import decompose_to_clifford_t
     start = time.monotonic()
     try:
         prep = prepare_state_sparse if r.approach == SPARSE else prepare_state_dense
         qc = prep(state, n_bits, timeout)
-        r.time_ms = (time.monotonic() - start) * 1000.0
-        r.t_count = estimate_t_count(qc)
         r.ry_count = count_ry(qc)
-        r.cnot_count = count_cnots(qc)
-        r.qubit_count = qc.num_qubits
-        r.gate_count = qc.size()
-        _fill_gate_counts(r, qc)
-        if n_bits <= 10:
-            r.fidelity = rotation_fidelity(qc, state, n_bits)
+
+        # Measure T count, CNOT count, and fidelity on the Clifford+T circuit
+        # you would actually run at this precision (so (T(b), 1-F(b)) is a
+        # coherent Pareto point). We keep `qc` (raw Ry/CRY) as the returned
+        # circuit so run.py's original-vs-clifford_t QASM split still makes
+        # sense; the decompose result is used only for measurement.
+        qc_measure = qc
         if precision_bits > 0 and r.ry_count > 0:
-            r.gs_t_count = _gridsynth_t_count(qc, precision_bits)
+            qc_measure = decompose_to_clifford_t(qc, precision_bits)
+
+        r.time_ms = (time.monotonic() - start) * 1000.0
+        r.t_count = estimate_t_count(qc_measure)
+        r.gs_t_count = r.t_count  # kept for plotting backwards-compat
+        r.cnot_count = count_cnots(qc_measure)
+        r.qubit_count = qc_measure.num_qubits
+        r.gate_count = qc_measure.size()
+        _fill_gate_counts(r, qc_measure)
+        if qc_measure.num_qubits <= 28:
+            r.fidelity = aer_rotation_fidelity(qc_measure, state, n_bits)
         return qc
     except Exception as e:
         r.success = False
@@ -186,8 +198,9 @@ def _run_qrom(state: State, n_bits: int, r: Result, precision_bits: int):
         r.qubit_count = res.qubit_count
         r.gate_count = res.qc.size()
         _fill_gate_counts(r, res.qc)
-        if res.qc.num_qubits <= 25:
-            r.fidelity = qrom_marginal_fidelity(res.qc, state, n_bits)
+        # Analytical Bhattacharyya over the alias table — no simulator needed,
+        # works at any qubit count / n_entries.
+        r.fidelity = qrom_alias_analytical_fidelity(state, n_bits, precision_bits)
         return res.qc
     except Exception:
         r.success = False
