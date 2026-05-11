@@ -18,7 +18,9 @@ class TestTCountFormulas:
         assert select_qrom_t_count(1) == 0
 
     def test_select_qrom_small(self):
-        assert select_qrom_t_count(4, 4) == 2 * 3 * 4
+        # N=4 unary iteration emits 2 compute-side CCX AND-pairs (level 1, j=1,0).
+        # Under Gidney + measurement-uncompute accounting: 2 pairs * 4 T/pair = 8.
+        assert select_qrom_t_count(4, 4) == (4 - 2) * 4
 
     def test_select_swap_t_count(self):
         t = select_swap_qrom_t_count(8, 4, 2, 4)

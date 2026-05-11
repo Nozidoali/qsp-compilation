@@ -28,7 +28,17 @@ def and_compute(qc: QuantumCircuit, c0: int, c1: int, anc: int) -> None:
 
 
 def and_uncompute(qc: QuantumCircuit, c0: int, c1: int, anc: int) -> None:
-    """Uncompute AND (adjoint of :func:`and_compute`).  Returns ancilla to |0>."""
+    """Uncompute AND (adjoint of :func:`and_compute`).  Returns ancilla to |0>.
+
+    NOTE on T-count accounting: this implementation is the unitary adjoint
+    (4 T gates). Callers (e.g. ``add_comparator_ct``, ``add_controlled_swap_ct``,
+    ``synthesize_qrom_ct``) report 0 T for the uncompute step — i.e. 4 T per
+    AND pair total — matching Gidney's measurement-based uncompute
+    (arxiv:1709.06648). Reason: keeping the circuit unitary lets us serialize
+    to OpenQASM 2 (which can't represent mid-circuit measure + classical
+    conditional), while the analytical T-cost reflects the asymptotically
+    achievable Gidney protocol.
+    """
     qc.h(anc)
     qc.tdg(anc)
     qc.cx(c1, anc)
@@ -113,7 +123,7 @@ def add_comparator_ct(
         and_compute(qc, a_qubits[i], b_qubits[i], ancillae[i])
         qc.cx(ancillae[i], flag_qubit)
         and_uncompute(qc, a_qubits[i], b_qubits[i], ancillae[i])
-        t_count += 8
+        t_count += 4  # 4T compute + 0T measurement-based uncompute (see and_uncompute docstring)
     return t_count
 
 
@@ -133,7 +143,7 @@ def add_controlled_swap_ct(
         qc.cx(ancillae[i], reg_a[i])
         and_uncompute(qc, ctrl, reg_b[i], ancillae[i])
         qc.cx(reg_a[i], reg_b[i])
-        t_count += 8
+        t_count += 4  # 4T compute + 0T measurement-based uncompute
         cx_count += 2
     return t_count, cx_count
 

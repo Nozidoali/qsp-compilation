@@ -195,9 +195,16 @@ def synthesize_basic_select(
     t_per_ccx = 4 if clean_ancilla else 7
     ccx_count = qc.count_ops().get("ccx", 0)
 
+    # Clean-ancilla cost assumes Gidney AND + measurement-based uncompute,
+    # which shares one AND-pair across each compute/uncompute CCX mirror in
+    # the unary iteration -> count each conjugate pair once (4T per pair),
+    # not 4T per CCX gate. Without clean ancillae each CCX is an independent
+    # 7T Toffoli, so the literal gate count is used.
+    n_logical_ccx = _count_unary_ccx(n, N) if clean_ancilla else ccx_count
+
     return QROMResult(
         qc=qc,
-        t_count=ccx_count * t_per_ccx,
+        t_count=n_logical_ccx * t_per_ccx,
         ccx_count=ccx_count,
         cx_count=cx_count,
         ancilla_count=N,
@@ -282,9 +289,18 @@ def synthesize_select_swap(
     t_per_ccx = 4 if clean_ancilla else 7
     ccx_total = qc.count_ops().get("ccx", 0)
 
+    # Clean-ancilla path: mirrored unary-iteration CCXs share one Gidney
+    # AND-pair (4T per pair); swap CCXs are standalone Toffolis (each one
+    # Gidney AND + measurement-based uncompute = 4T).
+    if clean_ancilla:
+        n_unary_logical = _count_unary_ccx(q_bits, n_quotients) if n_quotients > 1 else 0
+        n_logical_ccx = n_unary_logical + swap_ccx
+    else:
+        n_logical_ccx = ccx_total
+
     return QROMResult(
         qc=qc,
-        t_count=ccx_total * t_per_ccx,
+        t_count=n_logical_ccx * t_per_ccx,
         ccx_count=ccx_total,
         cx_count=cx_count + swap_cx,
         ancilla_count=n_quotients + lam * b,
@@ -319,7 +335,7 @@ def synthesize_basic_select_ct(
     cx_count = _load_data(qc, unary, target, data, b)
     _uncompute_unary_iteration_ct(qc, addr, unary, ancillae)
 
-    t_count = n_unary_ccx * 2 * 4  # 4T compute + 4T uncompute per CCX
+    t_count = n_unary_ccx * 4  # 4T per CCX-via-AND (measurement-based uncompute)
 
     return QROMResult(
         qc=qc,
@@ -417,14 +433,14 @@ def synthesize_select_swap_ct(
                     and_uncompute(qc, rem_q[bit], reg_groups[partner][j], ancillae[anc_idx])
                     qc.cx(reg_groups[reg][j], reg_groups[partner][j])
                     anc_idx += 1
-                    swap_t += 8
+                    swap_t += 4  # 4T per CCX-via-AND (measurement-based uncompute)
                     swap_cx += 2
 
     for j in range(b):
         qc.cx(reg_groups[0][j], output[j])
         cx_count += 1
 
-    t_count = n_unary_ccx * 2 * 4 + swap_t
+    t_count = n_unary_ccx * 4 + swap_t
 
     return QROMResult(
         qc=qc,
@@ -443,7 +459,10 @@ def compute_optimal_lambda(n_entries: int, data_bits: int) -> int:
         return 1
     best_cost = float("inf")
     best_lam = 1
-    max_lam = min(n_entries, 64)
+    # Enumerate all power-of-2 lambdas up to N. The continuous optimum is
+    # λ* = √(N/b) ≤ √N ≤ N, so n_entries is a tight-enough upper bound and
+    # the loop is O(log N) — cheap even for large N.
+    max_lam = n_entries
     lam = 1
     while lam <= max_lam:
         cost = 4.0 * _ceil_div(n_entries, lam) + 4.0 * data_bits * lam
@@ -457,14 +476,18 @@ def compute_optimal_lambda(n_entries: int, data_bits: int) -> int:
 def select_qrom_t_count(n_entries: int, t_per_ccx: int = 4) -> int:
     if n_entries <= 1:
         return 0
-    return 2 * (n_entries - 1) * t_per_ccx
+    # Unary iteration emits a compute/uncompute CCX mirror; under Gidney AND
+    # + measurement-based uncompute the mirror shares one AND-pair (4T total
+    # at t_per_ccx=4). Count the compute side once: n_entries - 2 pairs for
+    # a power-of-2-padded unary iteration (matches _count_unary_ccx).
+    return max(0, n_entries - 2) * t_per_ccx
 
 
 def select_swap_qrom_t_count(
     n_entries: int, data_bits: int, lam: int, t_per_ccx: int = 4
 ) -> int:
     n_quotients = _ceil_div(n_entries, lam)
-    select_ccx = 2 * (n_quotients - 1) if n_quotients > 1 else 0
+    select_ccx = max(0, n_quotients - 2)  # compute-side AND-pairs only
 
     r_bits = max(1, (lam - 1).bit_length()) if lam > 1 else 0
     swap_ccx = r_bits * data_bits * (lam // 2)
