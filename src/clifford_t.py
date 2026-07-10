@@ -134,6 +134,17 @@ def _collect_gridsynth_angles(flattened: QuantumCircuit):
                     continue
                 yield value
 
+def _lower_ry_rotation(output: QuantumCircuit, angle: float, qubit: int, precision_bits: int) -> None:
+    output.sdg(qubit)
+    output.h(qubit)
+    _emit_gridsynth_gates(output, _gridsynth_decompose(angle, precision_bits), qubit)
+    output.h(qubit)
+    output.s(qubit)
+
+def _lower_rz_rotation(output: QuantumCircuit, angle: float, qubit: int, precision_bits: int) -> None:
+    if not _emit_rz_as_clifford(output, angle, qubit):
+        _emit_gridsynth_gates(output, _gridsynth_decompose(angle, precision_bits), qubit)
+
 def decompose_to_clifford_t(circuit: QuantumCircuit, precision_bits: int, parallel: bool=True, max_workers: int | None=None) -> QuantumCircuit:
     flattened = _flatten_to_basic_gates(circuit)
     if parallel:
@@ -148,59 +159,38 @@ def decompose_to_clifford_t(circuit: QuantumCircuit, precision_bits: int, parall
                 continue
             if abs(abs(angle) - math.pi) < 1e-12:
                 output.x(qubits[0])
-                continue
-            qubit = qubits[0]
-            output.sdg(qubit)
-            output.h(qubit)
-            _emit_gridsynth_gates(output, _gridsynth_decompose(angle, precision_bits), qubit)
-            output.h(qubit)
-            output.s(qubit)
+            else:
+                _lower_ry_rotation(output, angle, qubits[0], precision_bits)
         elif name == 'cry':
             angle = float(instruction.operation.params[0])
             if abs(angle) < 1e-12:
                 continue
             control, target = qubits
             half_angle = angle / 2.0
-            output.sdg(target)
-            output.h(target)
-            _emit_gridsynth_gates(output, _gridsynth_decompose(half_angle, precision_bits), target)
-            output.h(target)
-            output.s(target)
+            _lower_ry_rotation(output, half_angle, target, precision_bits)
             output.cx(control, target)
-            output.sdg(target)
-            output.h(target)
-            _emit_gridsynth_gates(output, _gridsynth_decompose(-half_angle, precision_bits), target)
-            output.h(target)
-            output.s(target)
+            _lower_ry_rotation(output, -half_angle, target, precision_bits)
             output.cx(control, target)
         elif name == 'rz':
             angle = float(instruction.operation.params[0])
             if abs(angle) < 1e-12:
                 continue
-            qubit = qubits[0]
-            if not _emit_rz_as_clifford(output, angle, qubit):
-                _emit_gridsynth_gates(output, _gridsynth_decompose(angle, precision_bits), qubit)
+            _lower_rz_rotation(output, angle, qubits[0], precision_bits)
         elif name == 'u':
             theta = float(instruction.operation.params[0])
             phi = float(instruction.operation.params[1])
             lambda_angle = float(instruction.operation.params[2])
             qubit = qubits[0]
             if abs(lambda_angle) > 1e-12:
-                if not _emit_rz_as_clifford(output, lambda_angle, qubit):
-                    _emit_gridsynth_gates(output, _gridsynth_decompose(lambda_angle, precision_bits), qubit)
+                _lower_rz_rotation(output, lambda_angle, qubit, precision_bits)
             if abs(theta) < 1e-12:
                 pass
             elif abs(abs(theta) - math.pi) < 1e-12:
                 output.x(qubit)
             else:
-                output.sdg(qubit)
-                output.h(qubit)
-                _emit_gridsynth_gates(output, _gridsynth_decompose(theta, precision_bits), qubit)
-                output.h(qubit)
-                output.s(qubit)
+                _lower_ry_rotation(output, theta, qubit, precision_bits)
             if abs(phi) > 1e-12:
-                if not _emit_rz_as_clifford(output, phi, qubit):
-                    _emit_gridsynth_gates(output, _gridsynth_decompose(phi, precision_bits), qubit)
+                _lower_rz_rotation(output, phi, qubit, precision_bits)
         else:
             output.append(instruction.operation, qubits)
     return output
