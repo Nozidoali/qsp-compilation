@@ -28,11 +28,6 @@ def and_uncompute(qc: QuantumCircuit, c0: int, c1: int, anc: int) -> None:
     qc.cx(c0, anc)
     qc.h(anc)
 
-def ccx_via_and(qc: QuantumCircuit, c0: int, c1: int, tgt: int, anc: int) -> None:
-    and_compute(qc, c0, c1, anc)
-    qc.cx(anc, tgt)
-    and_uncompute(qc, c0, c1, anc)
-
 def mcry_gidney(qc: QuantumCircuit, theta: float, ctrls: List[int], target: int, ancillas: List[int]) -> None:
     k = len(ctrls)
     if k == 0:

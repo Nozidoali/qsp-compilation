@@ -1,11 +1,10 @@
 from __future__ import annotations
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import List
 from qiskit.circuit import QuantumCircuit
 from circuit_utils import add_comparator, add_comparator_ct, add_controlled_swap, add_controlled_swap_ct
-from synthesis import QROMResult, compute_optimal_lambda, select_qrom_t_count, select_swap_qrom_t_count, synthesize_qrom
+from synthesis import synthesize_qrom
 from state import State
 
 @dataclass
@@ -15,27 +14,8 @@ class AliasTable:
     n_bins: int = 0
     precision_bits: int = 0
 
-@dataclass
-class AliasSamplingResult:
-    qc: QuantumCircuit = field(default_factory=lambda: QuantumCircuit(0))
-    t_count: int = 0
-    cnot_count: int = 0
-    qubit_count: int = 0
-    keep_qrom_t: int = 0
-    alias_qrom_t: int = 0
-    compare_t: int = 0
-    cswap_t: int = 0
-    index_qrom_t: int = 0
-    compile_time_ms: float = 0.0
-    n_bins: int = 0
-    addr_bits: int = 0
-    keep_lambda: int = 0
-    alias_lambda: int = 0
-    index_lambda: int = 0
-
 def _amplitudes_to_probabilities(state: State, n_bits: int) -> List[float]:
-    dim = 1 << n_bits
-    probs = [0.0] * dim
+    probs = [0.0] * (1 << n_bits)
     for idx, amp in state.items():
         probs[idx] = amp * amp
     return probs
@@ -75,8 +55,7 @@ def _build_alias_table_from_probs(probs: List[float], precision_bits: int) -> Al
     return table
 
 def build_alias_table(state: State, n_bits: int, precision_bits: int) -> AliasTable:
-    probs = _amplitudes_to_probabilities(state, n_bits)
-    return _build_alias_table_from_probs(probs, precision_bits)
+    return _build_alias_table_from_probs(_amplitudes_to_probabilities(state, n_bits), precision_bits)
 
 def _sparse_addr_bits(card: int) -> int:
     if card <= 1:
@@ -94,16 +73,14 @@ def build_sparse_alias_table(state: State, precision_bits: int):
     for slot, (idx, amp) in enumerate(items):
         probs[slot] = amp * amp / total if total > 0 else 0.0
         index_map[slot] = idx
-    table = _build_alias_table_from_probs(probs, precision_bits)
-    return (table, index_map, m_bits)
+    return (_build_alias_table_from_probs(probs, precision_bits), index_map, m_bits)
 
-def synthesize_alias_sampling(state: State, n_bits: int, precision_bits: int=8, use_select_swap: bool=True, clean_ancilla: bool=True, clifford_t: bool=False) -> AliasSamplingResult:
-    start = time.monotonic()
+def synthesize_alias_sampling(state: State, n_bits: int, precision_bits: int=8, use_select_swap: bool=True, clifford_t: bool=False) -> QuantumCircuit:
     n = n_bits
     b = precision_bits
     table = build_alias_table(state, n, b)
-    keep_res = synthesize_qrom(table.keep_values, n, b, use_select_swap=use_select_swap, clean_ancilla=clean_ancilla, clifford_t=clifford_t)
-    alias_res = synthesize_qrom(table.alias_indices, n, n, use_select_swap=use_select_swap, clean_ancilla=clean_ancilla, clifford_t=clifford_t)
+    keep_res = synthesize_qrom(table.keep_values, n, b, use_select_swap=use_select_swap, clifford_t=clifford_t)
+    alias_res = synthesize_qrom(table.alias_indices, n, n, use_select_swap=use_select_swap, clifford_t=clifford_t)
     nq = 0
     addr = list(range(nq, nq + n))
     nq += n
@@ -134,48 +111,25 @@ def synthesize_alias_sampling(state: State, n_bits: int, precision_bits: int=8, 
         keep_map[keep_res.input_qubits[i]] = addr[i]
     qc.compose(keep_res.qc, qubits=keep_map, inplace=True)
     if clifford_t:
-        compare_t = add_comparator_ct(qc, keep_out, rand_q, flag, compare_anc)
+        add_comparator_ct(qc, keep_out, rand_q, flag, compare_anc)
     else:
-        compare_ccx = add_comparator(qc, keep_out, rand_q, flag)
+        add_comparator(qc, keep_out, rand_q, flag)
     alias_map = list(range(alias_start, alias_start + alias_res.qc.num_qubits))
     for i in range(n):
         alias_map[alias_res.input_qubits[i]] = addr[i]
     qc.compose(alias_res.qc, qubits=alias_map, inplace=True)
     if clifford_t:
-        cswap_t, cswap_cx = add_controlled_swap_ct(qc, flag, addr, alias_out, cswap_anc)
+        add_controlled_swap_ct(qc, flag, addr, alias_out, cswap_anc)
     else:
-        cswap_ccx, cswap_cx = add_controlled_swap(qc, flag, addr, alias_out)
-    elapsed = (time.monotonic() - start) * 1000.0
-    if clifford_t:
-        total_t = keep_res.t_count + alias_res.t_count + compare_t + cswap_t
-        result = AliasSamplingResult(qc=qc, t_count=total_t, cnot_count=qc.count_ops().get('cx', 0), qubit_count=nq, keep_qrom_t=keep_res.t_count, alias_qrom_t=alias_res.t_count, compare_t=compare_t, cswap_t=cswap_t, compile_time_ms=elapsed, n_bins=1 << n, addr_bits=n, keep_lambda=keep_res.lambda_used, alias_lambda=alias_res.lambda_used)
-    else:
-        t_per_ccx = 4 if clean_ancilla else 7
-        result = AliasSamplingResult(qc=qc, t_count=keep_res.t_count + alias_res.t_count + compare_ccx * t_per_ccx + cswap_ccx * t_per_ccx, cnot_count=qc.count_ops().get('cx', 0), qubit_count=nq, keep_qrom_t=keep_res.t_count, alias_qrom_t=alias_res.t_count, compare_t=compare_ccx * t_per_ccx, cswap_t=cswap_ccx * t_per_ccx, compile_time_ms=elapsed, n_bins=1 << n, addr_bits=n, keep_lambda=keep_res.lambda_used, alias_lambda=alias_res.lambda_used)
-    return result
+        add_controlled_swap(qc, flag, addr, alias_out)
+    return qc
 
-def estimate_alias_sampling_t_count(n_qubits: int, precision_bits: int, use_select_swap: bool=True, clean_ancilla: bool=True) -> int:
-    N = 1 << n_qubits
-    t_per_ccx = 4 if clean_ancilla else 7
-    if use_select_swap:
-        keep_lam = compute_optimal_lambda(N, precision_bits)
-        keep_t = select_swap_qrom_t_count(N, precision_bits, keep_lam, t_per_ccx)
-        alias_lam = compute_optimal_lambda(N, n_qubits)
-        alias_t = select_swap_qrom_t_count(N, n_qubits, alias_lam, t_per_ccx)
-    else:
-        keep_t = select_qrom_t_count(N, t_per_ccx)
-        alias_t = select_qrom_t_count(N, t_per_ccx)
-    compare_ccx = precision_bits
-    cswap_ccx = n_qubits
-    return keep_t + alias_t + (compare_ccx + cswap_ccx) * t_per_ccx
-
-def synthesize_sparse_alias_sampling(state: State, n_bits: int, precision_bits: int=8, use_select_swap: bool=True, clean_ancilla: bool=True, clifford_t: bool=False) -> AliasSamplingResult:
-    start = time.monotonic()
+def synthesize_sparse_alias_sampling(state: State, n_bits: int, precision_bits: int=8, use_select_swap: bool=True, clifford_t: bool=False) -> QuantumCircuit:
     b = precision_bits
     table, index_map, m = build_sparse_alias_table(state, b)
-    keep_res = synthesize_qrom(table.keep_values, m, b, use_select_swap=use_select_swap, clean_ancilla=clean_ancilla, clifford_t=clifford_t)
-    alias_res = synthesize_qrom(table.alias_indices, m, m, use_select_swap=use_select_swap, clean_ancilla=clean_ancilla, clifford_t=clifford_t)
-    index_res = synthesize_qrom(index_map, m, n_bits, use_select_swap=use_select_swap, clean_ancilla=clean_ancilla, clifford_t=clifford_t)
+    keep_res = synthesize_qrom(table.keep_values, m, b, use_select_swap=use_select_swap, clifford_t=clifford_t)
+    alias_res = synthesize_qrom(table.alias_indices, m, m, use_select_swap=use_select_swap, clifford_t=clifford_t)
+    index_res = synthesize_qrom(index_map, m, n_bits, use_select_swap=use_select_swap, clifford_t=clifford_t)
     nq = 0
     addr = list(range(nq, nq + m))
     nq += m
@@ -208,44 +162,19 @@ def synthesize_sparse_alias_sampling(state: State, n_bits: int, precision_bits: 
         keep_map[keep_res.input_qubits[i]] = addr[i]
     qc.compose(keep_res.qc, qubits=keep_map, inplace=True)
     if clifford_t:
-        compare_t = add_comparator_ct(qc, keep_out, rand_q, flag, compare_anc)
+        add_comparator_ct(qc, keep_out, rand_q, flag, compare_anc)
     else:
-        compare_ccx = add_comparator(qc, keep_out, rand_q, flag)
+        add_comparator(qc, keep_out, rand_q, flag)
     alias_map = list(range(alias_start, alias_start + alias_res.qc.num_qubits))
     for i in range(m):
         alias_map[alias_res.input_qubits[i]] = addr[i]
     qc.compose(alias_res.qc, qubits=alias_map, inplace=True)
     if clifford_t:
-        cswap_t, cswap_cx = add_controlled_swap_ct(qc, flag, addr, alias_out, cswap_anc)
+        add_controlled_swap_ct(qc, flag, addr, alias_out, cswap_anc)
     else:
-        cswap_ccx, cswap_cx = add_controlled_swap(qc, flag, addr, alias_out)
+        add_controlled_swap(qc, flag, addr, alias_out)
     index_map_qubits = list(range(index_start, index_start + index_res.qc.num_qubits))
     for i in range(m):
         index_map_qubits[index_res.input_qubits[i]] = addr[i]
     qc.compose(index_res.qc, qubits=index_map_qubits, inplace=True)
-    elapsed = (time.monotonic() - start) * 1000.0
-    if clifford_t:
-        compare_cost = compare_t
-        cswap_cost = cswap_t
-    else:
-        t_per_ccx = 4 if clean_ancilla else 7
-        compare_cost = compare_ccx * t_per_ccx
-        cswap_cost = cswap_ccx * t_per_ccx
-    total_t = keep_res.t_count + alias_res.t_count + index_res.t_count + compare_cost + cswap_cost
-    return AliasSamplingResult(qc=qc, t_count=total_t, cnot_count=qc.count_ops().get('cx', 0), qubit_count=nq, keep_qrom_t=keep_res.t_count, alias_qrom_t=alias_res.t_count, compare_t=compare_cost, cswap_t=cswap_cost, index_qrom_t=index_res.t_count, compile_time_ms=elapsed, n_bins=1 << m, addr_bits=m, keep_lambda=keep_res.lambda_used, alias_lambda=alias_res.lambda_used, index_lambda=index_res.lambda_used)
-
-def estimate_sparse_alias_sampling_t_count(card: int, n_bits: int, precision_bits: int, use_select_swap: bool=True, clean_ancilla: bool=True) -> int:
-    m = _sparse_addr_bits(card)
-    Np = 1 << m
-    t_per_ccx = 4 if clean_ancilla else 7
-    if use_select_swap:
-        keep_t = select_swap_qrom_t_count(Np, precision_bits, compute_optimal_lambda(Np, precision_bits), t_per_ccx)
-        alias_t = select_swap_qrom_t_count(Np, m, compute_optimal_lambda(Np, m), t_per_ccx)
-        index_t = select_swap_qrom_t_count(Np, n_bits, compute_optimal_lambda(Np, n_bits), t_per_ccx)
-    else:
-        keep_t = select_qrom_t_count(Np, t_per_ccx)
-        alias_t = select_qrom_t_count(Np, t_per_ccx)
-        index_t = select_qrom_t_count(Np, t_per_ccx)
-    compare_ccx = precision_bits
-    cswap_ccx = m
-    return keep_t + alias_t + index_t + (compare_ccx + cswap_ccx) * t_per_ccx
+    return qc

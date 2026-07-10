@@ -26,8 +26,8 @@ def synthesize(state, n_bits, method, precision_bits, clifford_t, timeout):
         return qc
     from alias_sampling import synthesize_alias_sampling, synthesize_sparse_alias_sampling
     if method == "sparse_alias":
-        return synthesize_sparse_alias_sampling(state, n_bits, precision_bits, use_select_swap=True, clifford_t=clifford_t).qc
-    return synthesize_alias_sampling(state, n_bits, precision_bits, use_select_swap=(method == "selectswap"), clifford_t=clifford_t).qc
+        return synthesize_sparse_alias_sampling(state, n_bits, precision_bits, use_select_swap=True, clifford_t=clifford_t)
+    return synthesize_alias_sampling(state, n_bits, precision_bits, use_select_swap=(method == "selectswap"), clifford_t=clifford_t)
 
 
 def compile_to_qasm(state_path, method="sparse", precision_bits=8, clifford_t=False, timeout=120.0):

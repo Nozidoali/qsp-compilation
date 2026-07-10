@@ -1,6 +1,5 @@
 from __future__ import annotations
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 from qiskit.circuit import QuantumCircuit
 from circuit_utils import and_compute, and_uncompute
@@ -10,15 +9,9 @@ def _ceil_div(a: int, b: int) -> int:
 
 @dataclass
 class QROMResult:
-    qc: QuantumCircuit = field(default_factory=lambda: QuantumCircuit(0))
-    t_count: int = 0
-    ccx_count: int = 0
-    cx_count: int = 0
-    x_count: int = 0
-    ancilla_count: int = 0
-    lambda_used: int = 0
-    input_qubits: List[int] = field(default_factory=list)
-    output_qubits: List[int] = field(default_factory=list)
+    qc: QuantumCircuit
+    input_qubits: List[int]
+    output_qubits: List[int]
 
 def _build_unary_iteration(qc: QuantumCircuit, addr: List[int], unary: List[int]) -> None:
     n = len(addr)
@@ -102,38 +95,30 @@ def _count_unary_ccx(addr_bits: int, n_unary: int) -> int:
                 count += 1
     return count
 
-def _load_data(qc: QuantumCircuit, unary: List[int], target: List[int], data: List[int], data_bits: int) -> int:
-    cx_count = 0
+def _load_data(qc: QuantumCircuit, unary: List[int], target: List[int], data: List[int], data_bits: int) -> None:
     for i, val in enumerate(data):
         for b in range(data_bits):
             if val >> b & 1:
                 qc.cx(unary[i], target[b])
-                cx_count += 1
-    return cx_count
 
-def synthesize_basic_select(data: List[int], addr_bits: int, data_bits: int, clean_ancilla: bool=True) -> QROMResult:
+def synthesize_basic_select(data: List[int], addr_bits: int, data_bits: int) -> QROMResult:
     N = len(data)
     n = addr_bits
     b = data_bits
-    total = n + N + b
-    qc = QuantumCircuit(total)
+    qc = QuantumCircuit(n + N + b)
     addr = list(range(n))
     unary = list(range(n, n + N))
     target = list(range(n + N, n + N + b))
     _build_unary_iteration(qc, addr, unary)
-    cx_count = _load_data(qc, unary, target, data, b)
+    _load_data(qc, unary, target, data, b)
     _uncompute_unary_iteration(qc, addr, unary)
-    t_per_ccx = 4 if clean_ancilla else 7
-    ccx_count = qc.count_ops().get('ccx', 0)
-    n_logical_ccx = _count_unary_ccx(n, N) if clean_ancilla else ccx_count
-    return QROMResult(qc=qc, t_count=n_logical_ccx * t_per_ccx, ccx_count=ccx_count, cx_count=cx_count, ancilla_count=N, lambda_used=0, input_qubits=addr, output_qubits=target)
+    return QROMResult(qc, addr, target)
 
-def synthesize_select_swap(data: List[int], addr_bits: int, data_bits: int, lam: int, clean_ancilla: bool=True) -> QROMResult:
+def synthesize_select_swap(data: List[int], addr_bits: int, data_bits: int, lam: int) -> QROMResult:
     N = len(data)
     n = addr_bits
     b = data_bits
     r_bits = max(1, (lam - 1).bit_length()) if lam > 1 else 1
-    q_bits = n - r_bits
     n_quotients = _ceil_div(N, lam)
     nq = 0
     addr = list(range(n))
@@ -154,7 +139,6 @@ def synthesize_select_swap(data: List[int], addr_bits: int, data_bits: int, lam:
         _build_unary_iteration(qc, quot_q, unary)
     else:
         qc.x(unary[0])
-    cx_count = 0
     for q_idx in range(n_quotients):
         for r_idx in range(lam):
             idx = q_idx * lam + r_idx
@@ -164,13 +148,10 @@ def synthesize_select_swap(data: List[int], addr_bits: int, data_bits: int, lam:
             for j in range(b):
                 if val >> j & 1:
                     qc.cx(unary[q_idx], reg_groups[r_idx][j])
-                    cx_count += 1
     if n_quotients > 1:
         _uncompute_unary_iteration(qc, quot_q, unary)
     else:
         qc.x(unary[0])
-    swap_ccx = 0
-    swap_cx = 0
     for bit in range(r_bits):
         for reg in range(lam):
             if not reg & 1 << bit:
@@ -181,26 +162,15 @@ def synthesize_select_swap(data: List[int], addr_bits: int, data_bits: int, lam:
                     qc.cx(reg_groups[reg][j], reg_groups[partner][j])
                     qc.ccx(rem_q[bit], reg_groups[partner][j], reg_groups[reg][j])
                     qc.cx(reg_groups[reg][j], reg_groups[partner][j])
-                    swap_ccx += 1
-                    swap_cx += 2
     for j in range(b):
         qc.cx(reg_groups[0][j], output[j])
-        cx_count += 1
-    t_per_ccx = 4 if clean_ancilla else 7
-    ccx_total = qc.count_ops().get('ccx', 0)
-    if clean_ancilla:
-        n_unary_logical = _count_unary_ccx(q_bits, n_quotients) if n_quotients > 1 else 0
-        n_logical_ccx = n_unary_logical + swap_ccx
-    else:
-        n_logical_ccx = ccx_total
-    return QROMResult(qc=qc, t_count=n_logical_ccx * t_per_ccx, ccx_count=ccx_total, cx_count=cx_count + swap_cx, ancilla_count=n_quotients + lam * b, lambda_used=lam, input_qubits=addr, output_qubits=output)
+    return QROMResult(qc, addr, output)
 
 def synthesize_basic_select_ct(data: List[int], addr_bits: int, data_bits: int) -> QROMResult:
     N = len(data)
     n = addr_bits
     b = data_bits
-    n_unary_ccx = _count_unary_ccx(n, N)
-    n_anc = n_unary_ccx
+    n_anc = _count_unary_ccx(n, N)
     nq = 0
     addr = list(range(nq, nq + n))
     nq += n
@@ -212,10 +182,9 @@ def synthesize_basic_select_ct(data: List[int], addr_bits: int, data_bits: int) 
     nq += n_anc
     qc = QuantumCircuit(nq)
     _build_unary_iteration_ct(qc, addr, unary, ancillae)
-    cx_count = _load_data(qc, unary, target, data, b)
+    _load_data(qc, unary, target, data, b)
     _uncompute_unary_iteration_ct(qc, addr, unary, ancillae)
-    t_count = n_unary_ccx * 4
-    return QROMResult(qc=qc, t_count=t_count, ccx_count=0, cx_count=cx_count, ancilla_count=N + n_anc, lambda_used=0, input_qubits=addr, output_qubits=target)
+    return QROMResult(qc, addr, target)
 
 def synthesize_select_swap_ct(data: List[int], addr_bits: int, data_bits: int, lam: int) -> QROMResult:
     N = len(data)
@@ -223,7 +192,6 @@ def synthesize_select_swap_ct(data: List[int], addr_bits: int, data_bits: int, l
     b = data_bits
     r_bits = max(1, (lam - 1).bit_length()) if lam > 1 else 1
     n_quotients = _ceil_div(N, lam)
-    rem_q_bits = r_bits
     quot_q_bits = n - r_bits
     n_unary_ccx = _count_unary_ccx(quot_q_bits, n_quotients) if n_quotients > 1 else 0
     n_swap_ccx = 0
@@ -255,7 +223,6 @@ def synthesize_select_swap_ct(data: List[int], addr_bits: int, data_bits: int, l
         _build_unary_iteration_ct(qc, quot_q, unary, ancillae[:n_unary_ccx])
     else:
         qc.x(unary[0])
-    cx_count = 0
     for q_idx in range(n_quotients):
         for r_idx in range(lam):
             idx = q_idx * lam + r_idx
@@ -265,13 +232,10 @@ def synthesize_select_swap_ct(data: List[int], addr_bits: int, data_bits: int, l
             for j in range(b):
                 if val >> j & 1:
                     qc.cx(unary[q_idx], reg_groups[r_idx][j])
-                    cx_count += 1
     if n_quotients > 1:
         _uncompute_unary_iteration_ct(qc, quot_q, unary, ancillae[:n_unary_ccx])
     else:
         qc.x(unary[0])
-    swap_cx = 0
-    swap_t = 0
     anc_idx = 0
     for bit in range(r_bits):
         for reg in range(lam):
@@ -286,22 +250,17 @@ def synthesize_select_swap_ct(data: List[int], addr_bits: int, data_bits: int, l
                     and_uncompute(qc, rem_q[bit], reg_groups[partner][j], ancillae[anc_idx])
                     qc.cx(reg_groups[reg][j], reg_groups[partner][j])
                     anc_idx += 1
-                    swap_t += 4
-                    swap_cx += 2
     for j in range(b):
         qc.cx(reg_groups[0][j], output[j])
-        cx_count += 1
-    t_count = n_unary_ccx * 4 + swap_t
-    return QROMResult(qc=qc, t_count=t_count, ccx_count=0, cx_count=cx_count + swap_cx, ancilla_count=n_quotients + lam * b + n_anc, lambda_used=lam, input_qubits=addr, output_qubits=output)
+    return QROMResult(qc, addr, output)
 
 def compute_optimal_lambda(n_entries: int, data_bits: int) -> int:
     if n_entries <= 2 or data_bits == 0:
         return 1
     best_cost = float('inf')
     best_lam = 1
-    max_lam = n_entries
     lam = 1
-    while lam <= max_lam:
+    while lam <= n_entries:
         cost = 4.0 * _ceil_div(n_entries, lam) + 4.0 * data_bits * lam
         if cost < best_cost:
             best_cost = cost
@@ -309,36 +268,19 @@ def compute_optimal_lambda(n_entries: int, data_bits: int) -> int:
         lam *= 2
     return best_lam
 
-def select_qrom_t_count(n_entries: int, t_per_ccx: int=4) -> int:
-    if n_entries <= 1:
-        return 0
-    return max(0, n_entries - 2) * t_per_ccx
-
-def select_swap_qrom_t_count(n_entries: int, data_bits: int, lam: int, t_per_ccx: int=4) -> int:
-    n_quotients = _ceil_div(n_entries, lam)
-    select_ccx = max(0, n_quotients - 2)
-    r_bits = max(1, (lam - 1).bit_length()) if lam > 1 else 0
-    swap_ccx = r_bits * data_bits * (lam // 2)
-    return (select_ccx + swap_ccx) * t_per_ccx
-
-def synthesize_qrom(data: List[int], addr_bits: int, data_bits: int, use_select_swap: bool=True, lam: int=0, clean_ancilla: bool=True, clifford_t: bool=False) -> QROMResult:
+def synthesize_qrom(data: List[int], addr_bits: int, data_bits: int, use_select_swap: bool=True, lam: int=0, clifford_t: bool=False) -> QROMResult:
     assert data
     assert addr_bits > 0
     assert data_bits > 0
     N = 1 << addr_bits
     padded = list(data) + [0] * (N - len(data))
-    if clifford_t:
-        if not use_select_swap:
-            return synthesize_basic_select_ct(padded, addr_bits, data_bits)
-        if lam == 0:
-            lam = compute_optimal_lambda(N, data_bits)
-        if lam <= 1 or N <= 2:
-            return synthesize_basic_select_ct(padded, addr_bits, data_bits)
-        return synthesize_select_swap_ct(padded, addr_bits, data_bits, lam)
-    if not use_select_swap:
-        return synthesize_basic_select(padded, addr_bits, data_bits, clean_ancilla)
     if lam == 0:
         lam = compute_optimal_lambda(N, data_bits)
-    if lam <= 1 or N <= 2:
-        return synthesize_basic_select(padded, addr_bits, data_bits, clean_ancilla)
-    return synthesize_select_swap(padded, addr_bits, data_bits, lam, clean_ancilla)
+    use_swap = use_select_swap and lam > 1 and N > 2
+    if clifford_t:
+        if use_swap:
+            return synthesize_select_swap_ct(padded, addr_bits, data_bits, lam)
+        return synthesize_basic_select_ct(padded, addr_bits, data_bits)
+    if use_swap:
+        return synthesize_select_swap(padded, addr_bits, data_bits, lam)
+    return synthesize_basic_select(padded, addr_bits, data_bits)

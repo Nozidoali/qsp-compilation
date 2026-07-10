@@ -1,11 +1,11 @@
 from __future__ import annotations
 import math
 import time
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Tuple
 import numpy as np
 from qiskit.circuit import QuantumCircuit
-from state import EPS, State, cardinality, state_hash
-from common import apply_controlled_cx, apply_controlled_cx_arr, apply_controlled_cx_np, apply_mcry, apply_mcry_arr, apply_mcry_np, apply_x, maximize_difference_once, maximize_difference_once_np
+from state import State, cardinality, state_hash
+from common import apply_controlled_cx_arr, apply_mcry_arr, maximize_difference_once_np
 
 def cardinality_reduction_by_one(state: State, n_bits: int) -> Tuple[State, List[dict]]:
     idx_arr = np.fromiter(state.keys(), dtype=np.int64, count=len(state))

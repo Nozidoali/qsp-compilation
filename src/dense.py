@@ -1,63 +1,11 @@
 from __future__ import annotations
 import math
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple
 from qiskit.circuit import QuantumCircuit
 from state import EPS, State, cardinality, get_supports, state_hash
-from common import apply_ry, apply_ucry, apply_x, apply_cx, get_ap_ry_angle, get_const1_signature, get_qubit_signatures, rotation_angles_optimization, select_informative_qubit
+from common import rotation_angles_optimization, select_informative_qubit
 from sparse import prepare_state_sparse
-
-def _x_reduction(state: State, n_bits: int, enable_cnot: bool) -> Tuple[State, List[dict]]:
-    sigs = get_qubit_signatures(state, n_bits)
-    const1 = get_const1_signature(state)
-    sig_to_qubit: Dict[int, int] = {}
-    curr = dict(state)
-    gates: List[dict] = []
-    for qi in range(n_bits):
-        sig = sigs[qi]
-        if sig == 0:
-            continue
-        if sig == const1:
-            gates.append({'type': 'x', 'target': qi})
-            curr = apply_x(curr, qi)
-            continue
-        if enable_cnot and sig in sig_to_qubit:
-            ctrl = sig_to_qubit[sig]
-            gates.append({'type': 'cx_plain', 'control': ctrl, 'target': qi, 'ctrl_val': True})
-            curr = apply_cx(curr, ctrl, qi)
-            sig_to_qubit[sig] = qi
-            continue
-        if enable_cnot and sig ^ const1 in sig_to_qubit:
-            ctrl = sig_to_qubit[sig ^ const1]
-            gates.append({'type': 'cx_plain', 'control': ctrl, 'target': qi, 'ctrl_val': False})
-            new: State = {}
-            for idx, amp in curr.items():
-                nidx = idx
-                if not idx >> ctrl & 1:
-                    nidx ^= 1 << qi
-                new[nidx] = amp
-            curr = new
-            continue
-        if enable_cnot:
-            sig_to_qubit[sig] = qi
-        else:
-            sig_to_qubit[sig] = qi
-    return (curr, gates)
-
-def _ry_reduction(state: State, n_bits: int) -> Tuple[State, List[dict]]:
-    curr = dict(state)
-    gates: List[dict] = []
-    for qi in range(n_bits):
-        theta = get_ap_ry_angle(curr, n_bits, qi)
-        if theta is not None:
-            gates.append({'type': 'ry', 'target': qi, 'theta': theta})
-            curr = apply_ry(curr, qi, theta)
-    return (curr, gates)
-
-def _support_reduction(state: State, n_bits: int) -> Tuple[State, List[dict]]:
-    s1, g1 = _x_reduction(state, n_bits, True)
-    s2, g2 = _ry_reduction(s1, n_bits)
-    return (s2, g1 + g2)
 
 def qubit_reduction_by_one(state: State, n_bits: int) -> Tuple[State, List[dict]]:
     supports = get_supports(state, n_bits)
