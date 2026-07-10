@@ -19,10 +19,14 @@ from experiments.compare_t_cost import (
     ROTATION_APPROACHES,
     Result,
     SELECTSWAP,
+    SPARSEALIAS,
     run_approach,
 )
 from qsp.circuit_utils import decompose_to_clifford_t
-from qsp.qrom.alias_sampling import synthesize_alias_sampling
+from qsp.qrom.alias_sampling import (
+    synthesize_alias_sampling,
+    synthesize_sparse_alias_sampling,
+)
 from qsp.state import load_state
 
 APPROACHES = list(ALL_APPROACHES)
@@ -36,11 +40,16 @@ def _emit_clifford_t_qasm(approach, qc, state, n_bits, precision_bits):
         return None
     if approach in ROTATION_APPROACHES:
         return qasm2_dumps(decompose_to_clifford_t(qc, precision_bits))
-    res_ct = synthesize_alias_sampling(
-        state, n_bits, precision_bits,
-        use_select_swap=(approach == SELECTSWAP),
-        clifford_t=True,
-    )
+    if approach == SPARSEALIAS:
+        res_ct = synthesize_sparse_alias_sampling(
+            state, n_bits, precision_bits, use_select_swap=True, clifford_t=True,
+        )
+    else:
+        res_ct = synthesize_alias_sampling(
+            state, n_bits, precision_bits,
+            use_select_swap=(approach == SELECTSWAP),
+            clifford_t=True,
+        )
     return qasm2_dumps(res_ct.qc)
 
 

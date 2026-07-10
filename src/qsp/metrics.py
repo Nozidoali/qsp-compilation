@@ -121,6 +121,36 @@ def qrom_alias_analytical_fidelity(
     return float(np.sum(np.sqrt(probs * tgt_probs)) ** 2)
 
 
+def sparse_qrom_alias_analytical_fidelity(
+    target: State,
+    n_bits: int,
+    precision_bits: int,
+) -> float:
+    """Bhattacharyya fidelity for *sparse* alias sampling, where bins cover only
+    the nonzero support (``2^m`` bins, ``m = ceil(log2(card))``) and an index
+    QROM maps each compressed slot ``j`` back to its real basis index.
+
+    The address is picked uniformly over the ``2^m`` compressed slots, so the
+    realized marginal on real index ``i`` is
+        p(i) = sum_{j: map[j]=i} keep[j]/2^b / 2^m
+             + sum_{j: map[alias[j]]=i} (1 - keep[j]/2^b) / 2^m.
+    """
+    from qsp.qrom.alias_sampling import build_sparse_alias_table
+
+    table, index_map, m_bits = build_sparse_alias_table(target, precision_bits)
+    n_bins = 1 << m_bits
+    K = 1 << precision_bits
+    probs = np.zeros(1 << n_bits)
+    for j in range(n_bins):
+        p_keep = table.keep_values[j] / K
+        probs[index_map[j]] += p_keep / n_bins
+        probs[index_map[table.alias_indices[j]]] += (1.0 - p_keep) / n_bins
+
+    tgt = to_statevector(target, n_bits)
+    tgt_probs = tgt ** 2
+    return float(np.sum(np.sqrt(probs * tgt_probs)) ** 2)
+
+
 def mps_marginal_fidelity(
     qc: QuantumCircuit,
     target: State,

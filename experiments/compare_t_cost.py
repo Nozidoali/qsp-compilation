@@ -33,8 +33,13 @@ from qsp.metrics import (
     qrom_alias_analytical_fidelity,
     qrom_marginal_fidelity,
     rotation_fidelity,
+    sparse_qrom_alias_analytical_fidelity,
 )
-from qsp.qrom.alias_sampling import estimate_alias_sampling_t_count, synthesize_alias_sampling
+from qsp.qrom.alias_sampling import (
+    estimate_alias_sampling_t_count,
+    synthesize_alias_sampling,
+    synthesize_sparse_alias_sampling,
+)
 from qsp.rotation.dense import prepare_state_dense
 from qsp.rotation.sparse import prepare_state_sparse
 from qsp.state import (
@@ -50,8 +55,11 @@ SPARSE = "sparse"
 DENSE = "dense"
 QROM = "qrom"
 SELECTSWAP = "selectswap"
+# Improved alias sampling: bins compressed to the support (next pow2), plus an
+# index-mapping QROM. SELECT-SWAP under the hood.
+SPARSEALIAS = "sparse_alias"
 ROTATION_APPROACHES = (SPARSE, DENSE)
-QROM_APPROACHES = (QROM, SELECTSWAP)
+QROM_APPROACHES = (QROM, SELECTSWAP, SPARSEALIAS)
 ALL_APPROACHES = ROTATION_APPROACHES + QROM_APPROACHES
 
 
@@ -213,6 +221,28 @@ def _run_qrom(state: State, n_bits: int, r: Result, precision_bits: int):
         return None
 
 
+def _run_sparse_alias(state: State, n_bits: int, r: Result, precision_bits: int):
+    start = time.monotonic()
+    try:
+        res = synthesize_sparse_alias_sampling(
+            state, n_bits, precision_bits, use_select_swap=True,
+        )
+        r.time_ms = res.compile_time_ms
+        r.t_count = res.t_count
+        r.cnot_count = res.cnot_count
+        r.qubit_count = res.qubit_count
+        r.gate_count = res.qc.size()
+        _fill_gate_counts(r, res.qc)
+        r.keep_lambda = res.keep_lambda
+        r.alias_lambda = res.alias_lambda
+        r.fidelity = sparse_qrom_alias_analytical_fidelity(state, n_bits, precision_bits)
+        return res.qc
+    except Exception:
+        r.success = False
+        r.time_ms = (time.monotonic() - start) * 1000.0
+        return None
+
+
 def run_approach(
     approach: str, state: State, n_bits: int, tag: str, family: str,
     precision_bits: int, timeout: float = 120.0,
@@ -224,6 +254,8 @@ def run_approach(
                approach=approach, precision_bits=precision_bits)
     if approach in ROTATION_APPROACHES:
         qc = _run_rotation(state, n_bits, r, timeout, precision_bits)
+    elif approach == SPARSEALIAS:
+        qc = _run_sparse_alias(state, n_bits, r, precision_bits)
     else:
         qc = _run_qrom(state, n_bits, r, precision_bits)
     return r, qc
