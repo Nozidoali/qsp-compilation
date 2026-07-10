@@ -17,7 +17,7 @@ from typing import List
 
 from qiskit.circuit import QuantumCircuit
 
-from qsp.circuit_utils import and_compute, and_uncompute
+from circuit_utils import and_compute, and_uncompute
 
 
 def _ceil_div(a: int, b: int) -> int:

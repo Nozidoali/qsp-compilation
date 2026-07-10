@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 from qiskit.quantum_info import Statevector
 
-from qsp.state import dense_uniform, dicke_state, to_statevector, w_state
-from qsp.rotation.dense import prepare_state_dense
+from state import dense_uniform, dicke_state, to_statevector, w_state
+from dense import prepare_state_dense
 
 
 def _fidelity(qc, target, n_bits):

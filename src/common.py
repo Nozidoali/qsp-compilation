@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from qsp.state import EPS, State
+from state import EPS, State
 
 
 # --- State simulation on dict[int, float] ---

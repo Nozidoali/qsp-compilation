@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from qsp.state import (
+from state import (
     cardinality,
     dense_uniform,
     dicke_state,

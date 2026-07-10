@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from qiskit.quantum_info import Statevector
 
-from qsp.qrom.synthesis import (
+from synthesis import (
     compute_optimal_lambda,
     select_qrom_t_count,
     select_swap_qrom_t_count,

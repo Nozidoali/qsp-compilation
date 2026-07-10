@@ -14,8 +14,8 @@ from typing import Dict, List, Set, Tuple
 import numpy as np
 from qiskit.circuit import QuantumCircuit
 
-from qsp.state import EPS, State, cardinality, state_hash
-from qsp.rotation.common import (
+from state import EPS, State, cardinality, state_hash
+from common import (
     apply_controlled_cx,
     apply_controlled_cx_arr,
     apply_controlled_cx_np,
@@ -212,7 +212,7 @@ def _emit_gates(
                     if not p:
                         qc.x(ctrls[i])
                 if use_gidney:
-                    from qsp.circuit_utils import mcry_gidney
+                    from circuit_utils import mcry_gidney
                     mcry_gidney(qc, theta, ctrls, target,
                                 ancillas[: max(0, len(ctrls) - 1)])
                 elif len(ctrls) == 1:

@@ -15,18 +15,18 @@ from typing import List
 
 from qiskit.circuit import QuantumCircuit
 
-from qsp.circuit_utils import (
+from circuit_utils import (
     add_comparator, add_comparator_ct,
     add_controlled_swap, add_controlled_swap_ct,
 )
-from qsp.qrom.synthesis import (
+from synthesis import (
     QROMResult,
     compute_optimal_lambda,
     select_qrom_t_count,
     select_swap_qrom_t_count,
     synthesize_qrom,
 )
-from qsp.state import State
+from state import State
 
 
 @dataclass

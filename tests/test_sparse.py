@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 from qiskit.quantum_info import Statevector
 
-from qsp.state import dicke_state, to_statevector, w_state
-from qsp.rotation.sparse import prepare_state_sparse
+from state import dicke_state, to_statevector, w_state
+from sparse import prepare_state_sparse
 #Diyi_test
 
 def _fidelity(qc, target, n_bits):
@@ -48,7 +48,7 @@ class TestSparse:
         a wrong circuit.  Previously max_iter=1000 hard-capped the reduction,
         so fidelity collapsed from 1.0 (card=990) to ~1e-4 (card=2000)."""
         import random
-        from qsp.state import normalize
+        from state import normalize
         random.seed(0)
         n = 12
         card = 1500

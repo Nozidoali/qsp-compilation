@@ -384,7 +384,7 @@ def decompose_to_clifford_t(
 
     Other gates (X, CX, H, S, T, etc.) are copied as-is.
     For CCX decomposition, use the native Clifford+T synthesis in
-    :mod:`qsp.qrom.synthesis` instead.
+    :mod:`synthesis` instead.
 
     When ``parallel=True`` (default) the cache is first populated in a process
     pool over unique angle buckets; the emit loop then runs serially against

@@ -14,8 +14,8 @@ from typing import Dict, List, Optional, Tuple
 
 from qiskit.circuit import QuantumCircuit
 
-from qsp.state import EPS, State, cardinality, get_supports, state_hash
-from qsp.rotation.common import (
+from state import EPS, State, cardinality, get_supports, state_hash
+from common import (
     apply_ry,
     apply_ucry,
     apply_x,
@@ -26,7 +26,7 @@ from qsp.rotation.common import (
     rotation_angles_optimization,
     select_informative_qubit,
 )
-from qsp.rotation.sparse import prepare_state_sparse
+from sparse import prepare_state_sparse
 
 
 # --- Support reduction helpers (X/CNOT cleanup + RY) ---
@@ -250,5 +250,5 @@ def _emit_gates(qc: QuantumCircuit, gates: List[dict]) -> None:
             target = g["target"]
             _demux_ry(qc, angles, target, controls)
         elif g["type"] == "mcry":
-            from qsp.rotation.sparse import _emit_gates as _sparse_emit
+            from sparse import _emit_gates as _sparse_emit
             _sparse_emit(qc, [g])
