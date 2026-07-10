@@ -1,10 +1,10 @@
 from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 from qiskit.circuit import QuantumCircuit
 from qrom_primitives import add_comparator, add_comparator_clifford_t, add_controlled_swap, add_controlled_swap_clifford_t
-from qrom import synthesize_qrom
+from qrom import synthesize_qrom, QROMResult
 from state import State
 
 @dataclass
@@ -13,12 +13,6 @@ class AliasTable:
     alias_indices: List[int] = field(default_factory=list)
     num_bins: int = 0
     precision_bits: int = 0
-
-def _amplitudes_to_probabilities(state: State, num_qubits: int) -> List[float]:
-    probabilities = [0.0] * (1 << num_qubits)
-    for index, amplitude in state.items():
-        probabilities[index] = amplitude * amplitude
-    return probabilities
 
 def _build_alias_table_from_probabilities(probabilities: List[float], precision_bits: int) -> AliasTable:
     num_bins = len(probabilities)
@@ -55,17 +49,14 @@ def _build_alias_table_from_probabilities(probabilities: List[float], precision_
     return table
 
 def build_alias_table(state: State, num_qubits: int, precision_bits: int) -> AliasTable:
-    return _build_alias_table_from_probabilities(_amplitudes_to_probabilities(state, num_qubits), precision_bits)
-
-def _num_address_bits_for_cardinality(cardinality_count: int) -> int:
-    if cardinality_count <= 1:
-        return 1
-    return (cardinality_count - 1).bit_length()
+    probabilities = [0.0] * (1 << num_qubits)
+    for index, amplitude in state.items():
+        probabilities[index] = amplitude * amplitude
+    return _build_alias_table_from_probabilities(probabilities, precision_bits)
 
 def build_sparse_alias_table(state: State, precision_bits: int):
     entries = sorted(((index, amplitude) for index, amplitude in state.items() if amplitude != 0.0))
-    cardinality_count = len(entries)
-    num_address_bits = _num_address_bits_for_cardinality(cardinality_count)
+    num_address_bits = max(1, (len(entries) - 1).bit_length())
     num_bins = 1 << num_address_bits
     total = sum((amplitude * amplitude for _, amplitude in entries))
     probabilities = [0.0] * num_bins
@@ -75,103 +66,57 @@ def build_sparse_alias_table(state: State, precision_bits: int):
         index_map[slot] = index
     return (_build_alias_table_from_probabilities(probabilities, precision_bits), index_map, num_address_bits)
 
-def synthesize_alias_sampling(state: State, num_qubits: int, precision_bits: int=8, use_select_swap: bool=True, clifford_t: bool=False) -> QuantumCircuit:
-    table = build_alias_table(state, num_qubits, precision_bits)
-    keep_qrom = synthesize_qrom(table.keep_values, num_qubits, precision_bits, use_select_swap=use_select_swap, clifford_t=clifford_t)
-    alias_qrom = synthesize_qrom(table.alias_indices, num_qubits, num_qubits, use_select_swap=use_select_swap, clifford_t=clifford_t)
+def _compose_qrom(circuit: QuantumCircuit, qrom: QROMResult, start: int, address_qubits: List[int]) -> None:
+    qubit_map = list(range(start, start + qrom.circuit.num_qubits))
+    for input_position, address_qubit in enumerate(address_qubits):
+        qubit_map[qrom.input_qubits[input_position]] = address_qubit
+    circuit.compose(qrom.circuit, qubits=qubit_map, inplace=True)
+
+def _build_alias_sampling_circuit(num_address_bits: int, keep_values: List[int], alias_indices: List[int], index_map: Optional[List[int]], num_index_bits: int, precision_bits: int, use_select_swap: bool, clifford_t: bool) -> QuantumCircuit:
+    keep_qrom = synthesize_qrom(keep_values, num_address_bits, precision_bits, use_select_swap=use_select_swap, clifford_t=clifford_t)
+    alias_qrom = synthesize_qrom(alias_indices, num_address_bits, num_address_bits, use_select_swap=use_select_swap, clifford_t=clifford_t)
+    index_qrom = synthesize_qrom(index_map, num_address_bits, num_index_bits, use_select_swap=use_select_swap, clifford_t=clifford_t) if index_map is not None else None
+
     qubit_count = 0
-    address_qubits = list(range(qubit_count, qubit_count + num_qubits))
-    qubit_count += num_qubits
-    keep_start = qubit_count
-    qubit_count += keep_qrom.circuit.num_qubits
+
+    def allocate(width: int) -> int:
+        nonlocal qubit_count
+        start = qubit_count
+        qubit_count += width
+        return start
+
+    address_qubits = list(range(allocate(num_address_bits), qubit_count))
+    keep_start = allocate(keep_qrom.circuit.num_qubits)
     keep_output_qubits = [keep_start + keep_qrom.output_qubits[i] for i in range(precision_bits)]
-    random_qubits = list(range(qubit_count, qubit_count + precision_bits))
-    qubit_count += precision_bits
-    flag_qubit = qubit_count
-    qubit_count += 1
-    alias_start = qubit_count
-    qubit_count += alias_qrom.circuit.num_qubits
-    alias_output_qubits = [alias_start + alias_qrom.output_qubits[i] for i in range(num_qubits)]
-    comparator_ancilla = []
-    swap_ancilla = []
-    if clifford_t:
-        comparator_ancilla = list(range(qubit_count, qubit_count + precision_bits))
-        qubit_count += precision_bits
-        swap_ancilla = list(range(qubit_count, qubit_count + num_qubits))
-        qubit_count += num_qubits
+    random_qubits = list(range(allocate(precision_bits), qubit_count))
+    flag_qubit = allocate(1)
+    alias_start = allocate(alias_qrom.circuit.num_qubits)
+    alias_output_qubits = [alias_start + alias_qrom.output_qubits[i] for i in range(num_address_bits)]
+    index_start = allocate(index_qrom.circuit.num_qubits) if index_qrom is not None else 0
+    comparator_ancilla = list(range(allocate(precision_bits), qubit_count)) if clifford_t else []
+    swap_ancilla = list(range(allocate(num_address_bits), qubit_count)) if clifford_t else []
+
     circuit = QuantumCircuit(qubit_count)
-    for i in range(num_qubits):
-        circuit.h(address_qubits[i])
-    for i in range(precision_bits):
-        circuit.h(random_qubits[i])
-    keep_qubit_map = list(range(keep_start, keep_start + keep_qrom.circuit.num_qubits))
-    for i in range(num_qubits):
-        keep_qubit_map[keep_qrom.input_qubits[i]] = address_qubits[i]
-    circuit.compose(keep_qrom.circuit, qubits=keep_qubit_map, inplace=True)
+    for qubit in address_qubits + random_qubits:
+        circuit.h(qubit)
+    _compose_qrom(circuit, keep_qrom, keep_start, address_qubits)
     if clifford_t:
         add_comparator_clifford_t(circuit, keep_output_qubits, random_qubits, flag_qubit, comparator_ancilla)
     else:
         add_comparator(circuit, keep_output_qubits, random_qubits, flag_qubit)
-    alias_qubit_map = list(range(alias_start, alias_start + alias_qrom.circuit.num_qubits))
-    for i in range(num_qubits):
-        alias_qubit_map[alias_qrom.input_qubits[i]] = address_qubits[i]
-    circuit.compose(alias_qrom.circuit, qubits=alias_qubit_map, inplace=True)
+    _compose_qrom(circuit, alias_qrom, alias_start, address_qubits)
     if clifford_t:
         add_controlled_swap_clifford_t(circuit, flag_qubit, address_qubits, alias_output_qubits, swap_ancilla)
     else:
         add_controlled_swap(circuit, flag_qubit, address_qubits, alias_output_qubits)
+    if index_qrom is not None:
+        _compose_qrom(circuit, index_qrom, index_start, address_qubits)
     return circuit
+
+def synthesize_alias_sampling(state: State, num_qubits: int, precision_bits: int=8, use_select_swap: bool=True, clifford_t: bool=False) -> QuantumCircuit:
+    table = build_alias_table(state, num_qubits, precision_bits)
+    return _build_alias_sampling_circuit(num_qubits, table.keep_values, table.alias_indices, None, num_qubits, precision_bits, use_select_swap, clifford_t)
 
 def synthesize_sparse_alias_sampling(state: State, num_qubits: int, precision_bits: int=8, use_select_swap: bool=True, clifford_t: bool=False) -> QuantumCircuit:
     table, index_map, num_address_bits = build_sparse_alias_table(state, precision_bits)
-    keep_qrom = synthesize_qrom(table.keep_values, num_address_bits, precision_bits, use_select_swap=use_select_swap, clifford_t=clifford_t)
-    alias_qrom = synthesize_qrom(table.alias_indices, num_address_bits, num_address_bits, use_select_swap=use_select_swap, clifford_t=clifford_t)
-    index_qrom = synthesize_qrom(index_map, num_address_bits, num_qubits, use_select_swap=use_select_swap, clifford_t=clifford_t)
-    qubit_count = 0
-    address_qubits = list(range(qubit_count, qubit_count + num_address_bits))
-    qubit_count += num_address_bits
-    keep_start = qubit_count
-    qubit_count += keep_qrom.circuit.num_qubits
-    keep_output_qubits = [keep_start + keep_qrom.output_qubits[i] for i in range(precision_bits)]
-    random_qubits = list(range(qubit_count, qubit_count + precision_bits))
-    qubit_count += precision_bits
-    flag_qubit = qubit_count
-    qubit_count += 1
-    alias_start = qubit_count
-    qubit_count += alias_qrom.circuit.num_qubits
-    alias_output_qubits = [alias_start + alias_qrom.output_qubits[i] for i in range(num_address_bits)]
-    index_start = qubit_count
-    qubit_count += index_qrom.circuit.num_qubits
-    comparator_ancilla = []
-    swap_ancilla = []
-    if clifford_t:
-        comparator_ancilla = list(range(qubit_count, qubit_count + precision_bits))
-        qubit_count += precision_bits
-        swap_ancilla = list(range(qubit_count, qubit_count + num_address_bits))
-        qubit_count += num_address_bits
-    circuit = QuantumCircuit(qubit_count)
-    for i in range(num_address_bits):
-        circuit.h(address_qubits[i])
-    for i in range(precision_bits):
-        circuit.h(random_qubits[i])
-    keep_qubit_map = list(range(keep_start, keep_start + keep_qrom.circuit.num_qubits))
-    for i in range(num_address_bits):
-        keep_qubit_map[keep_qrom.input_qubits[i]] = address_qubits[i]
-    circuit.compose(keep_qrom.circuit, qubits=keep_qubit_map, inplace=True)
-    if clifford_t:
-        add_comparator_clifford_t(circuit, keep_output_qubits, random_qubits, flag_qubit, comparator_ancilla)
-    else:
-        add_comparator(circuit, keep_output_qubits, random_qubits, flag_qubit)
-    alias_qubit_map = list(range(alias_start, alias_start + alias_qrom.circuit.num_qubits))
-    for i in range(num_address_bits):
-        alias_qubit_map[alias_qrom.input_qubits[i]] = address_qubits[i]
-    circuit.compose(alias_qrom.circuit, qubits=alias_qubit_map, inplace=True)
-    if clifford_t:
-        add_controlled_swap_clifford_t(circuit, flag_qubit, address_qubits, alias_output_qubits, swap_ancilla)
-    else:
-        add_controlled_swap(circuit, flag_qubit, address_qubits, alias_output_qubits)
-    index_qubit_map = list(range(index_start, index_start + index_qrom.circuit.num_qubits))
-    for i in range(num_address_bits):
-        index_qubit_map[index_qrom.input_qubits[i]] = address_qubits[i]
-    circuit.compose(index_qrom.circuit, qubits=index_qubit_map, inplace=True)
-    return circuit
+    return _build_alias_sampling_circuit(num_address_bits, table.keep_values, table.alias_indices, index_map, num_qubits, precision_bits, use_select_swap, clifford_t)

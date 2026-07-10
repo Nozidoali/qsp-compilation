@@ -3,7 +3,7 @@ import math
 from typing import Dict, List, Tuple
 import numpy as np
 from qiskit.circuit import QuantumCircuit
-from state import State, cardinality
+from state import State
 from rotation_helpers import apply_controlled_x, apply_multi_controlled_ry, split_on_most_unbalanced_qubit
 
 def reduce_cardinality_by_one(state: State, num_qubits: int) -> Tuple[State, List[dict]]:
@@ -53,7 +53,7 @@ def prepare_state_by_cardinality_reduction(state: State, num_qubits: int, use_gi
     current_state = dict(state)
     gate_list: List[dict] = []
     for _ in range(len(state)):
-        if cardinality(current_state) <= 1:
+        if len(current_state) <= 1:
             break
         current_state, gates = reduce_cardinality_by_one(current_state, num_qubits)
         gate_list.extend(gates)

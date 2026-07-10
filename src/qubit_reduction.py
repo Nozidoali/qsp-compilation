@@ -2,13 +2,13 @@ from __future__ import annotations
 import math
 from typing import List, Tuple
 from qiskit.circuit import QuantumCircuit
-from state import EPSILON, State, cardinality, get_support_qubits
+from state import EPSILON, State, get_support_qubits
 from rotation_helpers import optimize_rotation_angles, select_informative_qubit
 from cardinality_reduction import prepare_state_by_cardinality_reduction, emit_gate_list
 
 def reduce_one_qubit(state: State, num_qubits: int) -> Tuple[State, List[dict]]:
     support_qubits = get_support_qubits(state, num_qubits)
-    if len(support_qubits) <= 1 or cardinality(state) < 2:
+    if len(support_qubits) <= 1 or len(state) < 2:
         return (state, [])
     pivot_qubit = select_informative_qubit(state, num_qubits, support_qubits)
     control_indices = [qubit for qubit in support_qubits if qubit != pivot_qubit]
@@ -57,13 +57,13 @@ def prepare_state_by_qubit_reduction(state: State, num_qubits: int) -> QuantumCi
         current_state, gates = reduce_one_qubit(current_state, num_qubits)
         gate_list.extend(gates)
         support_qubits = get_support_qubits(current_state, num_qubits)
-    if cardinality(current_state) == 1:
+    if len(current_state) == 1:
         index = next(iter(current_state.keys()))
         if index != 0 or abs(current_state[index] - 1.0) > 1e-06:
             for target in range(num_qubits):
                 if index >> target & 1:
                     gate_list.append({'type': 'x', 'target': target})
-    elif cardinality(current_state) > 1:
+    elif len(current_state) > 1:
         fallback_circuit = prepare_state_by_cardinality_reduction(current_state, num_qubits)
         gate_list.reverse()
         circuit.compose(fallback_circuit, inplace=True)
