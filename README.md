@@ -36,7 +36,6 @@ python main.py benchmarks/basic/w_n3.json -m sparse_alias -b 6 --clifford-t
 | `-b`           | `8`      | Precision bits (alias-table precision; Clifford+T angle precision) |
 | `--clifford-t` | off      | Emit the Clifford+T circuit instead of the raw one            |
 | `-o`           | stdout   | Output QASM path                                              |
-| `-t`           | `120`    | Per-synthesis timeout in seconds (rotation methods)           |
 
 ### Methods
 
@@ -59,23 +58,17 @@ amplitudes. See `benchmarks/` for examples.
 ## Structure
 
 ```
-main.py            # entry point: state JSON + method -> QASM
+main.py                    # entry point: state JSON + method -> QASM
 src/
-  state.py         # sparse state representation, JSON (de)serialization
-  common.py        # rotation helpers (X/CNOT reduction, angle optimization)
-  sparse.py        # cardinality-reduction rotation synthesis
-  dense.py         # qubit-reduction rotation synthesis
-  synthesis.py     # QROM: basic Select and SelectSwap (CCX and AND variants)
-  alias_sampling.py# Walker alias sampling (dense and sparse/compressed)
-  circuit_utils.py # comparator, controlled-swap, Gidney AND, Clifford+T lowering
-benchmarks/        # example target states (basic / t_friendly / thc)
-tests/             # pytest suite for the src modules
-```
-
-## Tests
-
-```bash
-pytest
+  state.py                 # sparse state representation, JSON (de)serialization
+  rotation_helpers.py      # reduction primitives, angle optimization
+  cardinality_reduction.py # sparse rotation synthesis (reduce nonzero count)
+  qubit_reduction.py       # dense rotation synthesis (reduce support qubits)
+  qrom.py                  # QROM: basic Select and SelectSwap (CCX and AND variants)
+  qrom_primitives.py       # comparator, controlled-swap, Gidney AND, Gidney MCRY
+  clifford_t.py            # Clifford+T lowering of rotations via gridsynth
+  alias_sampling.py        # Walker alias sampling (dense and sparse/compressed)
+benchmarks/                # example target states (basic / t_friendly / thc)
 ```
 
 ## T-cost accounting
