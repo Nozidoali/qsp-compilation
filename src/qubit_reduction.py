@@ -5,6 +5,7 @@ from qiskit.circuit import QuantumCircuit
 from state import EPSILON, State, get_support_qubits
 from rotation_helpers import optimize_rotation_angles, select_informative_qubit
 from cardinality_reduction import prepare_state_by_cardinality_reduction, emit_gate_list
+from qrom import synthesize_qrom
 
 def reduce_one_qubit(state: State, num_qubits: int) -> Tuple[State, List[dict]]:
     support_qubits = get_support_qubits(state, num_qubits)
@@ -46,8 +47,7 @@ def reduce_one_qubit(state: State, num_qubits: int) -> Tuple[State, List[dict]]:
     reduced_state = {index: amplitude for index, amplitude in reduced_state.items() if abs(amplitude) > EPSILON}
     return (reduced_state, gates)
 
-def prepare_state_by_qubit_reduction(state: State, num_qubits: int) -> QuantumCircuit:
-    circuit = QuantumCircuit(num_qubits)
+def prepare_state_by_qubit_reduction(state: State, num_qubits: int, use_qrom: bool=False, precision_bits: int=8) -> QuantumCircuit:
     current_state = dict(state)
     gate_list: List[dict] = []
     support_qubits = get_support_qubits(current_state, num_qubits)
@@ -57,6 +57,7 @@ def prepare_state_by_qubit_reduction(state: State, num_qubits: int) -> QuantumCi
         current_state, gates = reduce_one_qubit(current_state, num_qubits)
         gate_list.extend(gates)
         support_qubits = get_support_qubits(current_state, num_qubits)
+    fallback_circuit = None
     if len(current_state) == 1:
         index = next(iter(current_state.keys()))
         if index != 0 or abs(current_state[index] - 1.0) > 1e-06:
@@ -65,12 +66,59 @@ def prepare_state_by_qubit_reduction(state: State, num_qubits: int) -> QuantumCi
                     gate_list.append({'type': 'x', 'target': target})
     elif len(current_state) > 1:
         fallback_circuit = prepare_state_by_cardinality_reduction(current_state, num_qubits)
-        gate_list.reverse()
-        circuit.compose(fallback_circuit, inplace=True)
+    gate_list.reverse()
+    if not use_qrom:
+        circuit = QuantumCircuit(num_qubits)
+        if fallback_circuit is not None:
+            circuit.compose(fallback_circuit, inplace=True)
         _emit_dense_gate_list(circuit, gate_list)
         return circuit
-    gate_list.reverse()
-    _emit_dense_gate_list(circuit, gate_list)
+    return _emit_dense_gate_list_via_qrom(gate_list, num_qubits, precision_bits, fallback_circuit)
+
+
+def _quantize_angle(angle: float, precision_bits: int) -> int:
+    return round(angle % (4 * math.pi) / (4 * math.pi) * (1 << precision_bits)) % (1 << precision_bits)
+
+
+def _emit_uniformly_controlled_ry_via_qrom(circuit: QuantumCircuit, angles: List[float], target: int, controls: List[int], qrom, angle_register: List[int], scratch_qubits: List[int], precision_bits: int) -> None:
+    qubit_map = [0] * qrom.circuit.num_qubits
+    for address_position, input_qubit in enumerate(qrom.input_qubits):
+        qubit_map[input_qubit] = controls[address_position]
+    for data_position, output_qubit in enumerate(qrom.output_qubits):
+        qubit_map[output_qubit] = angle_register[data_position]
+    reserved = set(qrom.input_qubits) | set(qrom.output_qubits)
+    next_scratch = 0
+    for local_qubit in range(qrom.circuit.num_qubits):
+        if local_qubit in reserved:
+            continue
+        qubit_map[local_qubit] = scratch_qubits[next_scratch]
+        next_scratch += 1
+    circuit.compose(qrom.circuit, qubits=qubit_map, inplace=True)
+    for bit in range(precision_bits):
+        circuit.cry(4 * math.pi * (1 << bit) / (1 << precision_bits), angle_register[bit], target)
+    circuit.compose(qrom.circuit, qubits=qubit_map, inplace=True)
+
+
+def _emit_dense_gate_list_via_qrom(gate_list: List[dict], num_qubits: int, precision_bits: int, fallback_circuit) -> QuantumCircuit:
+    qroms: dict = {}
+    max_scratch = 0
+    for gate in gate_list:
+        if gate['type'] == 'ucry':
+            num_controls = len(gate['controls'])
+            table = [_quantize_angle(angle, precision_bits) for angle in gate['angles']]
+            qrom = synthesize_qrom(table, num_controls, precision_bits, use_select_swap=False)
+            qroms[id(gate)] = qrom
+            max_scratch = max(max_scratch, qrom.circuit.num_qubits - num_controls - precision_bits)
+    angle_register = list(range(num_qubits, num_qubits + precision_bits))
+    scratch_qubits = list(range(num_qubits + precision_bits, num_qubits + precision_bits + max_scratch))
+    circuit = QuantumCircuit(num_qubits + precision_bits + max_scratch)
+    if fallback_circuit is not None:
+        circuit.compose(fallback_circuit, inplace=True)
+    for gate in gate_list:
+        if gate['type'] == 'ucry':
+            _emit_uniformly_controlled_ry_via_qrom(circuit, gate['angles'], gate['target'], gate['controls'], qroms[id(gate)], angle_register, scratch_qubits, precision_bits)
+        else:
+            _emit_dense_gate_list(circuit, [gate])
     return circuit
 _DEMUX_TOLERANCE = 1e-10
 

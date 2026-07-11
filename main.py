@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from qiskit.qasm2 import dumps as qasm2_dumps
 from state import load_state
 
-ROTATION_METHODS = ("sparse", "dense")
+ROTATION_METHODS = ("sparse", "dense", "dense_qrom")
 QROM_METHODS = ("qrom", "selectswap", "sparse_alias")
 METHODS = ROTATION_METHODS + QROM_METHODS
 
@@ -19,7 +19,7 @@ def synthesize(state, num_qubits, method, precision_bits, clifford_t):
             circuit = prepare_state_by_cardinality_reduction(state, num_qubits)
         else:
             from qubit_reduction import prepare_state_by_qubit_reduction
-            circuit = prepare_state_by_qubit_reduction(state, num_qubits)
+            circuit = prepare_state_by_qubit_reduction(state, num_qubits, use_qrom=(method == "dense_qrom"), precision_bits=precision_bits)
         if clifford_t:
             from clifford_t import decompose_to_clifford_t
             circuit = decompose_to_clifford_t(circuit, precision_bits)

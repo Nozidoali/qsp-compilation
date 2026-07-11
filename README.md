@@ -5,7 +5,7 @@ Compile a target quantum state (JSON) into an OpenQASM circuit via rotation-base
 ```bash
 pip install -r requirements.txt
 python main.py benchmarks/basic/w_n3.json -m selectswap -b 8 -o w_n3.qasm
-# -m: sparse | dense | qrom | selectswap | sparse_alias   -b: precision bits   --clifford-t: emit Clifford+T
+# -m: sparse | dense | dense_qrom | qrom | selectswap | sparse_alias   -b: precision bits   --clifford-t: emit Clifford+T
 ```
 
 ## Citation
