@@ -96,7 +96,7 @@ def _emit_uniformly_controlled_ry_via_qrom(circuit: QuantumCircuit, angles: List
     circuit.compose(qrom.circuit, qubits=qubit_map, inplace=True)
     for bit in range(precision_bits):
         circuit.cry(4 * math.pi * (1 << bit) / (1 << precision_bits), angle_register[bit], target)
-    circuit.compose(qrom.circuit, qubits=qubit_map, inplace=True)
+    circuit.compose(qrom.circuit.inverse(), qubits=qubit_map, inplace=True)
 
 
 def _emit_dense_gate_list_via_qrom(gate_list: List[dict], num_qubits: int, precision_bits: int, fallback_circuit) -> QuantumCircuit:
@@ -106,7 +106,7 @@ def _emit_dense_gate_list_via_qrom(gate_list: List[dict], num_qubits: int, preci
         if gate['type'] == 'ucry':
             num_controls = len(gate['controls'])
             table = [_quantize_angle(angle, precision_bits) for angle in gate['angles']]
-            qrom = synthesize_qrom(table, num_controls, precision_bits, use_select_swap=False)
+            qrom = synthesize_qrom(table, num_controls, precision_bits, use_select_swap=True)
             qroms[id(gate)] = qrom
             max_scratch = max(max_scratch, qrom.circuit.num_qubits - num_controls - precision_bits)
     angle_register = list(range(num_qubits, num_qubits + precision_bits))
