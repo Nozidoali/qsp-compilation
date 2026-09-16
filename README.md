@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="docs/assets/logo.svg" width="128" height="128" alt="State Preparation Compilation logo">
+</p>
+
 # State Preparation Compilation
+
+Part of the [High-Level Quantum Circuit Synthesis Toolkit](https://github.com/Nozidoali/q-hls).
 
 Compile a target quantum state (JSON) into an OpenQASM circuit via rotation-based (sparse/dense) or QROM-based (alias sampling) synthesis.
 
